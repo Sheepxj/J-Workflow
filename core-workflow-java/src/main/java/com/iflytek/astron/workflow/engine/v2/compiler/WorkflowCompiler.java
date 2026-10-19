@@ -3,6 +3,7 @@ package com.iflytek.astron.workflow.engine.v2.compiler;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iflytek.astron.workflow.engine.v2.definition.Condition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.EdgeType;
@@ -10,6 +11,7 @@ import com.iflytek.astron.workflow.engine.v2.definition.InputBinding;
 import com.iflytek.astron.workflow.engine.v2.definition.LoopDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.NodeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.NodeDefinition.Routing;
+import com.iflytek.astron.workflow.engine.v2.definition.ParallelDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.WorkflowDefinition;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowError;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowExecutionException;
@@ -42,7 +44,8 @@ public final class WorkflowCompiler {
         require(present(definition.definitionId()) && definition.version() > 0, "Definition ID/version required");
         require(!definition.nodes().isEmpty(), "Nodes required");
         require(definition.limits().maxNodeExecutions() > 0 && definition.limits().maxDurationMs() > 0
-                && definition.limits().maxControlTransitions() > 0, "Execution limits must be positive");
+                && definition.limits().maxControlTransitions() > 0 && definition.limits().maxConcurrentAttempts() > 0
+                && definition.limits().maxConcurrentAttempts() <= 32, "Execution limits must be positive; concurrency cannot exceed 32");
 
         Map<String, NodeDefinition> nodes = new LinkedHashMap<>();
         Map<String, List<EdgeDefinition>> outgoing = new LinkedHashMap<>();
@@ -50,7 +53,7 @@ public final class WorkflowCompiler {
         for (NodeDefinition node : definition.nodes()) {
             require(present(node.id()) && present(node.type()), "Node ID/type required");
             require(nodes.putIfAbsent(node.id(), node) == null, "Duplicate node: " + node.id());
-            require(Set.of("START", "END", "LOOP", "XOR").contains(node.type())
+            require(Set.of("START", "END", "LOOP", "XOR", "FORK", "JOIN").contains(node.type())
                     || executorTypes.contains(node.type()), "Unsupported node type: " + node.type());
             require(node.retry().maxAttempts() > 0 && node.retry().delayMs() >= 0
                     && node.retry().timeoutMs() > 0, "Invalid retry policy: " + node.id());
@@ -107,6 +110,8 @@ public final class WorkflowCompiler {
                 require(outs.stream().allMatch(e -> e.condition() == null && !e.defaultEdge()), "LOOP routes are controlled by continueWhen");
                 require(incoming.get(node.id()).stream().anyMatch(e -> "enter".equals(e.targetPort())), "Loop entry required");
                 require(incoming.get(node.id()).stream().anyMatch(e -> "continue".equals(e.targetPort())), "Loop continuation required");
+            } else if ("FORK".equals(node.type())) {
+                require(node.inputBindings().isEmpty(), "FORK does not accept business input bindings");
             } else if (node.routing() == Routing.EXCLUSIVE || "XOR".equals(node.type())) {
                 require(!outs.isEmpty() && outs.stream().filter(EdgeDefinition::defaultEdge).count() == 1,
                         "Exclusive routing requires exactly one default edge");
@@ -116,6 +121,9 @@ public final class WorkflowCompiler {
                         "Sequential node requires exactly one unconditional edge: " + node.id());
             }
             validateBindings(node.inputBindings(), nodes, loopIds);
+            if ("JOIN".equals(node.type())) {
+                require(node.inputBindings().isEmpty(), "JOIN inputs are its explicit branch result collection");
+            }
         }
 
         for (LoopDefinition loop : definition.loops()) {
@@ -124,7 +132,7 @@ public final class WorkflowCompiler {
             validateBindings(loop.outputBindings(), nodes, loopIds);
         }
         for (EdgeDefinition edge : definition.edges()) {
-            validateBoundary(edge, owners, loops);
+            validateBoundary(edge, owners, loops, nodes);
         }
         requireAcyclicWithoutBackEdges(nodes.keySet(), outgoing);
         String startId = starts.getFirst().id();
@@ -134,19 +142,23 @@ public final class WorkflowCompiler {
         nodes.keySet().forEach(id -> reverse.put(id, incoming.get(id)));
         require(reachable(endId, reverse, true).size() == nodes.size(), "Every node must have a structural path to END");
 
+        Map<String, ParallelDefinition> parallels = new ParallelCompiler().compile(definition.parallels(), nodes,
+                outgoing, incoming, owners);
+
         Map<String, List<EdgeDefinition>> frozen = new LinkedHashMap<>();
         outgoing.forEach((key, edges) -> frozen.put(key, List.copyOf(edges)));
-        return new CompiledWorkflow(definition, hash(definition), startId, nodes, frozen, loops, owners);
+        return new CompiledWorkflow(definition, hash(definition), startId, nodes, frozen, loops, owners, parallels);
     }
 
     private void validateBoundary(EdgeDefinition edge, Map<String, String> owners,
-                                  Map<String, LoopDefinition> loops) {
+                                  Map<String, LoopDefinition> loops, Map<String, NodeDefinition> nodes) {
         String sourceOwner = owners.get(edge.source());
         String targetOwner = owners.get(edge.target());
         boolean sourceHeader = loops.containsKey(edge.source());
         boolean targetHeader = loops.containsKey(edge.target());
         scope(targetHeader || edge.targetPort() == null, "Only LOOP supports target ports");
-        scope(sourceHeader || edge.sourcePort() == null, "Only LOOP supports source ports");
+        scope(sourceHeader || "FORK".equals(nodes.get(edge.source()).type()) || edge.sourcePort() == null,
+                "Only LOOP/FORK supports source ports");
         if (sourceHeader) {
             scope("body".equals(edge.sourcePort()) || "exit".equals(edge.sourcePort()), "Unknown LOOP source port");
             if ("body".equals(edge.sourcePort())) {
@@ -257,7 +269,14 @@ public final class WorkflowCompiler {
 
     private String hash(WorkflowDefinition definition) {
         try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(definition)));
+            ObjectNode canonical = mapper.valueToTree(definition);
+            if (definition.parallels().isEmpty()) {
+                canonical.remove("parallels");
+            }
+            if (definition.limits().maxConcurrentAttempts() == 1) {
+                ((ObjectNode) canonical.get("limits")).remove("maxConcurrentAttempts");
+            }
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(canonical)));
         } catch (JsonProcessingException | NoSuchAlgorithmException e) {
             throw new WorkflowExecutionException(WorkflowError.INVALID_DEFINITION, "Cannot hash workflow definition");
         }

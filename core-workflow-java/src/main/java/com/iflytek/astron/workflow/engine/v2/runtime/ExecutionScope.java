@@ -12,6 +12,7 @@ public class ExecutionScope {
     private String parentScopeId;
     private ScopeType type;
     private String loopId;
+    private String branchId;
     private int iterationNo;
     private int completedIterations;
     private boolean closed;

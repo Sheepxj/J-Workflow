@@ -1,0 +1,109 @@
+{
+  "inputs": {
+    "text": "seed"
+  },
+  "definition": {
+    "dslVersion": "2",
+    "definitionId": "parallel",
+    "version": 1,
+    "limits": {
+      "maxNodeExecutions": 100,
+      "maxDurationMs": 300000,
+      "maxConcurrentAttempts": 2
+    },
+    "nodes": [
+      {
+        "id": "start",
+        "type": "START"
+      },
+      {
+        "id": "fork",
+        "type": "FORK"
+      },
+      {
+        "id": "left",
+        "type": "MOCK",
+        "config": {
+          "operation": "CONSTANT",
+          "outputs": {
+            "value": "L"
+          }
+        }
+      },
+      {
+        "id": "right",
+        "type": "MOCK",
+        "config": {
+          "operation": "CONSTANT",
+          "outputs": {
+            "value": "R"
+          }
+        }
+      },
+      {
+        "id": "join",
+        "type": "JOIN"
+      },
+      {
+        "id": "end",
+        "type": "END",
+        "inputBindings": {
+          "left": {
+            "source": "NODE_OUTPUT",
+            "nodeId": "join",
+            "path": "branches.left.nodes.left.value"
+          },
+          "right": {
+            "source": "NODE_OUTPUT",
+            "nodeId": "join",
+            "path": "branches.right.nodes.right.value"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "s",
+        "source": "start",
+        "target": "fork"
+      },
+      {
+        "id": "fl",
+        "source": "fork",
+        "target": "left",
+        "sourcePort": "left"
+      },
+      {
+        "id": "fr",
+        "source": "fork",
+        "target": "right",
+        "sourcePort": "right"
+      },
+      {
+        "id": "lj",
+        "source": "left",
+        "target": "join"
+      },
+      {
+        "id": "rj",
+        "source": "right",
+        "target": "join"
+      },
+      {
+        "id": "je",
+        "source": "join",
+        "target": "end"
+      }
+    ],
+    "parallels": [
+      {
+        "forkNodeId": "fork",
+        "joinNodeId": "join",
+        "branches": {
+          "left": "left",
+          "right": "right"
+        }
+      }
+    ]
+  }
+}

@@ -28,6 +28,7 @@ public class WorkflowRun {
     private Map<String, Object> outputs = Map.of();
     private Map<String, NodeExecution> executions = new LinkedHashMap<>();
     private Map<String, ExecutionScope> scopes = new LinkedHashMap<>();
+    private Map<String, ParallelRuntime> parallels = new LinkedHashMap<>();
     private List<ControlToken> tokens = new ArrayList<>();
     private Set<String> consumedTokens = new HashSet<>();
     private Set<String> passedBreakpoints = new HashSet<>();

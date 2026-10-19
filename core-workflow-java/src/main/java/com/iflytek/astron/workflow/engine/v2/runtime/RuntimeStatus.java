@@ -25,6 +25,6 @@ public final class RuntimeStatus {
     }
 
     public enum ScopeType {
-        ROOT, LOOP, ITERATION
+        ROOT, LOOP, ITERATION, PARALLEL, BRANCH
     }
 }

@@ -8,6 +8,7 @@ import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.JsonValues;
 import com.iflytek.astron.workflow.engine.v2.definition.LoopDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.NodeDefinition;
+import com.iflytek.astron.workflow.engine.v2.definition.ParallelDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.WorkflowDefinition;
 import com.iflytek.astron.workflow.engine.v2.executor.NodeInvocation;
 import com.iflytek.astron.workflow.engine.v2.executor.NodeTaskExecutor;
@@ -15,6 +16,7 @@ import com.iflytek.astron.workflow.engine.v2.runtime.ControlToken;
 import com.iflytek.astron.workflow.engine.v2.runtime.ExecutionAttempt;
 import com.iflytek.astron.workflow.engine.v2.runtime.ExecutionScope;
 import com.iflytek.astron.workflow.engine.v2.runtime.NodeExecution;
+import com.iflytek.astron.workflow.engine.v2.runtime.ParallelRuntime;
 import com.iflytek.astron.workflow.engine.v2.runtime.RunEvent;
 import com.iflytek.astron.workflow.engine.v2.runtime.RuntimeStatus.AttemptStatus;
 import com.iflytek.astron.workflow.engine.v2.runtime.RuntimeStatus.ExecutionStatus;
@@ -105,14 +107,14 @@ public final class WorkflowScheduler {
                     return;
                 }
                 if (run.getStatus() == RunStatus.PAUSING) {
-                    if (running(run) == null && !physicalAttempts.containsKey(runId)) {
+                    if (running(run) == null && physicalCount(runId) == 0) {
                         run.setStatus(RunStatus.PAUSED);
                         releaseOwnership(run);
                         event(run, "RUN_PAUSED", null, null, null, Map.of());
                     }
                     return;
                 }
-                if (running(run) != null || physicalAttempts.containsKey(runId)) {
+                if (physicalCount(runId) >= graph.definition().limits().maxConcurrentAttempts()) {
                     return;
                 }
                 NodeExecution ready = run.getExecutions().values().stream()
@@ -122,15 +124,18 @@ public final class WorkflowScheduler {
                     return;
                 }
                 NodeExecution waiting = run.getExecutions().values().stream()
-                        .filter(execution -> execution.getStatus() == ExecutionStatus.RETRY_WAIT).findFirst().orElse(null);
+                        .filter(execution -> execution.getStatus() == ExecutionStatus.RETRY_WAIT
+                                && execution.getRetryAt() <= clock.millis()).findFirst().orElse(null);
                 if (waiting != null) {
-                    if (waiting.getRetryAt() <= clock.millis()) {
-                        prepareAttempt(run, graph, waiting, dispatch);
-                    }
+                    prepareAttempt(run, graph, waiting, dispatch);
                     return;
                 }
                 if (!run.getTokens().isEmpty()) {
                     activate(run, graph, run.getTokens().getFirst(), dispatch);
+                    return;
+                }
+                if (physicalCount(runId) > 0 || run.getExecutions().values().stream()
+                        .anyMatch(execution -> !execution.getStatus().terminal())) {
                     return;
                 }
                 boolean closed = run.getScopes().values().stream()
@@ -185,7 +190,7 @@ public final class WorkflowScheduler {
 
     public void complete(String runId, String executionId, String attemptId, Map<String, Object> outputs,
                           WorkflowError errorCode, String error) {
-        physicalAttempts.computeIfPresent(runId, (key, physical) -> physical.id().equals(attemptId) ? null : physical);
+        physicalAttempts.computeIfPresent(attemptId, (key, physical) -> physical.runId().equals(runId) ? null : physical);
         store.update(runId, run -> {
             NodeExecution execution = run.getExecutions().get(executionId);
             if (run.getStatus().terminal() || !ownerId.equals(run.getOwnerId()) || run.getLeaseUntil() <= clock.millis()
@@ -223,7 +228,8 @@ public final class WorkflowScheduler {
             return;
         }
         NodeDefinition node = graph.nodes().get(token.targetNodeId());
-        if (node.breakpoint() && run.getPassedBreakpoints().add(token.tokenId())) {
+        if ((!"JOIN".equals(node.type()) || "joined".equals(token.targetPort()))
+                && node.breakpoint() && run.getPassedBreakpoints().add(token.tokenId())) {
             run.setStatus(RunStatus.PAUSING);
             event(run, "BREAKPOINT_REACHED", null, null, token.scopeId(), Map.of("nodeId", node.id()));
             return;
@@ -234,6 +240,26 @@ public final class WorkflowScheduler {
             advanceLoop(run, graph, token);
             return;
         }
+        if ("FORK".equals(node.type())) {
+            fork(run, graph, token);
+            return;
+        }
+        if ("JOIN".equals(node.type())) {
+            if ("joined".equals(token.targetPort())) {
+                ParallelRuntime parallel = run.getParallels().get(token.tokenId());
+                require(parallel != null && parallel.isClosed(), WorkflowError.INVALID_SCOPE, "JOIN collection is not complete");
+                activateBusiness(run, graph, token, dispatch, Map.of("branches", parallel.getArrivals()));
+            } else {
+                join(run, graph, token);
+            }
+            return;
+        }
+        activateBusiness(run, graph, token, dispatch, null);
+    }
+
+    private void activateBusiness(WorkflowRun run, CompiledWorkflow graph, ControlToken token,
+                                    List<NodeInvocation> dispatch, Map<String, Object> suppliedInputs) {
+        NodeDefinition node = graph.nodes().get(token.targetNodeId());
         ExecutionScope scope = run.getScopes().get(token.scopeId());
         require(!scope.isClosed() && !scope.getNodeExecutions().containsKey(node.id()),
                 WorkflowError.INVALID_SCOPE, "Node activated more than once within one scope");
@@ -244,7 +270,8 @@ public final class WorkflowScheduler {
         execution.setNodeId(node.id());
         execution.setScopeId(scope.getScopeId());
         execution.setActivationId(token.tokenId());
-        Map<String, Object> inputs = resolver.resolve(node.inputBindings(), run, scope.getScopeId());
+        Map<String, Object> inputs = suppliedInputs == null ? resolver.resolve(node.inputBindings(), run, scope.getScopeId())
+                : JsonValues.snapshot(suppliedInputs);
         execution.setInputSnapshot("START".equals(node.type()) && node.inputBindings().isEmpty() ? run.getInputs() : inputs);
         run.getExecutions().put(execution.getExecutionId(), execution);
         scope.getNodeExecutions().put(node.id(), execution.getExecutionId());
@@ -274,8 +301,8 @@ public final class WorkflowScheduler {
 
     private void dispatch(NodeInvocation planned) {
         AtomicBoolean cancelled = new AtomicBoolean();
-        PhysicalAttempt physical = new PhysicalAttempt(planned.attemptId(), cancelled);
-        if (physicalAttempts.putIfAbsent(planned.runId(), physical) != null) {
+        PhysicalAttempt physical = new PhysicalAttempt(planned.attemptId(), planned.runId(), cancelled);
+        if (physicalAttempts.putIfAbsent(planned.attemptId(), physical) != null) {
             return;
         }
         AtomicReference<NodeInvocation> claimed = new AtomicReference<>();
@@ -284,7 +311,10 @@ public final class WorkflowScheduler {
                 NodeExecution execution = run.getExecutions().get(planned.executionId());
                 if (run.getStatus() != RunStatus.RUNNING || !ownerId.equals(run.getOwnerId())
                         || run.getLeaseUntil() <= clock.millis() || execution == null
-                        || execution.getStatus() != ExecutionStatus.READY) {
+                        || execution.getStatus() != ExecutionStatus.READY
+                        || physicalCount(planned.runId()) > run.getDefinition().limits().maxConcurrentAttempts()
+                        || run.getExecutions().values().stream().filter(item -> item.getStatus() == ExecutionStatus.RUNNING)
+                                .count() >= run.getDefinition().limits().maxConcurrentAttempts()) {
                     return;
                 }
                 ExecutionAttempt attempt = execution.getAttempts().getLast();
@@ -299,12 +329,12 @@ public final class WorkflowScheduler {
                 event(run, "NODE_ATTEMPT_STARTED", execution, attempt, execution.getScopeId(), execution.getInputSnapshot());
             });
         } catch (RuntimeException e) {
-            physicalAttempts.remove(planned.runId(), physical);
+            physicalAttempts.remove(planned.attemptId(), physical);
             throw e;
         }
         NodeInvocation invocation = claimed.get();
         if (invocation == null) {
-            physicalAttempts.remove(planned.runId(), physical);
+            physicalAttempts.remove(planned.attemptId(), physical);
             return;
         }
         try {
@@ -316,7 +346,7 @@ public final class WorkflowScheduler {
                         return;
                     }
                     Map<String, Object> outputs;
-                    if (List.of("START", "END", "XOR").contains(invocation.node().type())) {
+                    if (List.of("START", "END", "XOR", "JOIN").contains(invocation.node().type())) {
                         outputs = invocation.inputs();
                     } else {
                         NodeTaskExecutor executor = executors.get(invocation.node().type());
@@ -352,9 +382,7 @@ public final class WorkflowScheduler {
     }
 
     private void advanceLoop(WorkflowRun run, CompiledWorkflow graph, ControlToken token) {
-        require(run.getControlTransitions() < graph.definition().limits().maxControlTransitions(),
-                WorkflowError.BUDGET_EXCEEDED, "Control transition limit exceeded");
-        run.setControlTransitions(run.getControlTransitions() + 1);
+        controlStep(run, graph);
         LoopDefinition definition = graph.loopsByHeader().get(token.targetNodeId());
         ExecutionScope loop;
         if ("enter".equals(token.targetPort())) {
@@ -386,6 +414,68 @@ public final class WorkflowScheduler {
             emitPort(run, graph, definition.headerNodeId(), "body", iteration.getScopeId(), null);
             event(run, "ITERATION_STARTED", null, null, iteration.getScopeId(), loop.getLocalState());
         }
+    }
+
+    private void fork(WorkflowRun run, CompiledWorkflow graph, ControlToken token) {
+        controlStep(run, graph);
+        ParallelDefinition definition = graph.parallelsByFork().get(token.targetNodeId());
+        ExecutionScope parent = run.getScopes().get(token.scopeId());
+        require(parent != null && !parent.isClosed(), WorkflowError.INVALID_SCOPE, "FORK parent scope is closed");
+        ExecutionScope group = scope(run, ScopeType.PARALLEL, parent.getScopeId(), parent.getLoopId(), parent.getIterationNo());
+        ParallelRuntime parallel = new ParallelRuntime();
+        parallel.setForkInstanceId(group.getScopeId());
+        parallel.setForkNodeId(definition.forkNodeId());
+        parallel.setJoinNodeId(definition.joinNodeId());
+        parallel.setParentScopeId(parent.getScopeId());
+        run.getParallels().put(group.getScopeId(), parallel);
+        for (EdgeDefinition edge : graph.outgoing().get(definition.forkNodeId())) {
+            ExecutionScope branch = scope(run, ScopeType.BRANCH, group.getScopeId(), parent.getLoopId(), parent.getIterationNo());
+            branch.setBranchId(edge.sourcePort());
+            parallel.getBranchScopes().put(edge.sourcePort(), branch.getScopeId());
+            emit(run, edge, branch.getScopeId(), token.causeExecutionId());
+        }
+        event(run, "PARALLEL_STARTED", null, null, group.getScopeId(),
+                Map.of("forkInstanceId", group.getScopeId(), "forkNodeId", definition.forkNodeId()));
+    }
+
+    private void join(WorkflowRun run, CompiledWorkflow graph, ControlToken token) {
+        controlStep(run, graph);
+        ExecutionScope branch = run.getScopes().get(token.scopeId());
+        require(branch != null && branch.getType() == ScopeType.BRANCH, WorkflowError.INVALID_SCOPE,
+                "JOIN arrival must belong to a branch scope");
+        ParallelRuntime parallel = run.getParallels().get(branch.getParentScopeId());
+        require(parallel != null && parallel.getJoinNodeId().equals(token.targetNodeId())
+                && branch.getScopeId().equals(parallel.getBranchScopes().get(branch.getBranchId())),
+                WorkflowError.INVALID_SCOPE, "JOIN does not belong to this fork instance");
+        if (parallel.getArrivals().containsKey(branch.getBranchId())) {
+            return;
+        }
+        Map<String, Object> outputs = new LinkedHashMap<>();
+        branch.getNodeExecutions().forEach((nodeId, executionId) -> {
+            NodeExecution execution = run.getExecutions().get(executionId);
+            require(execution.getStatus() == ExecutionStatus.SUCCEEDED, WorkflowError.INVALID_SCOPE,
+                    "Branch has an uncommitted execution");
+            outputs.put(nodeId, execution.getOutputs());
+        });
+        parallel.getArrivals().put(branch.getBranchId(), JsonValues.snapshot(
+                Map.of("nodes", outputs, "loops", branch.getLoopOutputs())));
+        branch.setClosed(true);
+        event(run, "BRANCH_ARRIVED", null, null, branch.getScopeId(),
+                Map.of("forkInstanceId", parallel.getForkInstanceId(), "branchId", branch.getBranchId()));
+        if (parallel.getArrivals().size() == parallel.getBranchScopes().size()) {
+            parallel.setClosed(true);
+            run.getScopes().get(parallel.getForkInstanceId()).setClosed(true);
+            run.getTokens().add(new ControlToken(parallel.getForkInstanceId(), null, parallel.getJoinNodeId(),
+                    "joined", parallel.getParentScopeId(), null));
+            event(run, "PARALLEL_COMPLETED", null, null, parallel.getForkInstanceId(),
+                    Map.of("forkInstanceId", parallel.getForkInstanceId()));
+        }
+    }
+
+    private void controlStep(WorkflowRun run, CompiledWorkflow graph) {
+        require(run.getControlTransitions() < graph.definition().limits().maxControlTransitions(),
+                WorkflowError.BUDGET_EXCEEDED, "Control transition limit exceeded");
+        run.setControlTransitions(run.getControlTransitions() + 1);
     }
 
     private void route(WorkflowRun run, CompiledWorkflow graph, NodeExecution execution) {
@@ -421,13 +511,17 @@ public final class WorkflowScheduler {
     }
 
     private void expireAttempts(WorkflowRun run, CompiledWorkflow graph) {
-        NodeExecution execution = running(run);
-        if (execution != null && execution.getAttempts().getLast().getDeadline() <= clock.millis()) {
-            PhysicalAttempt physical = physicalAttempts.get(run.getRunId());
-            if (physical != null) {
-                physical.cancelled().set(true);
+        for (NodeExecution execution : run.getExecutions().values()) {
+            if (execution.getStatus() == ExecutionStatus.RUNNING && execution.getAttempts().getLast().getDeadline() <= clock.millis()) {
+                PhysicalAttempt physical = physicalAttempts.get(execution.getAttempts().getLast().getAttemptId());
+                if (physical != null) {
+                    physical.cancelled().set(true);
+                }
+                failedAttempt(run, graph, execution, WorkflowError.ATTEMPT_TIMED_OUT, "Attempt timed out");
+                if (run.getStatus().terminal()) {
+                    return;
+                }
             }
-            failedAttempt(run, graph, execution, WorkflowError.ATTEMPT_TIMED_OUT, "Attempt timed out");
         }
     }
 
@@ -467,10 +561,8 @@ public final class WorkflowScheduler {
                 execution.getAttempts().getLast().setStatus(AttemptStatus.CANCELLED);
             }
         });
-        PhysicalAttempt physical = physicalAttempts.get(run.getRunId());
-        if (physical != null) {
-            physical.cancelled().set(true);
-        }
+        physicalAttempts.values().stream().filter(physical -> physical.runId().equals(run.getRunId()))
+                .forEach(physical -> physical.cancelled().set(true));
     }
 
     public void resolveInterrupted(String runId, String executionId, boolean retry, Map<String, Object> outputs) {
@@ -514,7 +606,7 @@ public final class WorkflowScheduler {
             attempt.setError("Previous scheduler lease expired before a result was committed");
             NodeDefinition node = run.getDefinition().nodes().stream()
                     .filter(item -> item.id().equals(execution.getNodeId())).findFirst().orElseThrow();
-            boolean safe = Set.of("START", "END", "XOR", "MOCK").contains(node.type());
+            boolean safe = Set.of("START", "END", "XOR", "MOCK", "JOIN").contains(node.type());
             String recovery = String.valueOf(node.config().getOrDefault("recovery", safe ? "RETRY" : "MANUAL"));
             if ("RETRY".equals(recovery) && execution.getAttempts().size() < node.retry().maxAttempts()) {
                 execution.setStatus(ExecutionStatus.RETRY_WAIT);
@@ -581,6 +673,10 @@ public final class WorkflowScheduler {
         return UUID.randomUUID().toString();
     }
 
-    private record PhysicalAttempt(String id, AtomicBoolean cancelled) {
+    private long physicalCount(String runId) {
+        return physicalAttempts.values().stream().filter(attempt -> attempt.runId().equals(runId)).count();
+    }
+
+    private record PhysicalAttempt(String id, String runId, AtomicBoolean cancelled) {
     }
 }

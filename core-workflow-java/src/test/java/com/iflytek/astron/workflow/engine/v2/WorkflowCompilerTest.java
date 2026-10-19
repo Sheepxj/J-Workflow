@@ -1,6 +1,7 @@
 package com.iflytek.astron.workflow.engine.v2;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iflytek.astron.workflow.engine.v2.compiler.CompiledWorkflow;
 import com.iflytek.astron.workflow.engine.v2.compiler.WorkflowCompiler;
@@ -11,6 +12,8 @@ import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowExecutionException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -83,6 +86,25 @@ class WorkflowCompilerTest {
         tree = sample();
         ((ObjectNode) tree.get("limits")).put("maxNodeExecutions", 0);
         assertNotNull(failure(tree));
+        tree = sample();
+        ((ObjectNode) tree.get("limits")).put("maxControlTransitions", 0);
+        assertNotNull(failure(tree));
+        tree = sample();
+        ((ObjectNode) tree.get("limits")).put("maxConcurrentAttempts", 0);
+        assertNotNull(failure(tree));
+    }
+
+    @Test
+    void additiveParallelDefaultsPreserveThePreviouslyStoredDefinitionHash() throws Exception {
+        WorkflowDefinition definition = definition(sample());
+        ObjectMapper canonicalMapper = mapper.copy().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+        ObjectNode oldShape = canonicalMapper.valueToTree(definition);
+        oldShape.remove("parallels");
+        ((ObjectNode) oldShape.get("limits")).remove("maxConcurrentAttempts");
+        String oldHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(canonicalMapper.writeValueAsBytes(oldShape)));
+
+        assertEquals(oldHash, compiler.compile(definition).contentHash());
     }
 
     @Test

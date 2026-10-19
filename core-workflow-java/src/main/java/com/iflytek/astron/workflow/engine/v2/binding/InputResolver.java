@@ -40,12 +40,12 @@ public final class InputResolver {
                 yield scope.getLoopOutputs().get(binding.loopId());
             }
             case NODE_OUTPUT -> {
-                if ("CURRENT_ITERATION".equals(binding.scope()) && scope.getType() != ScopeType.ITERATION) {
+                if ("CURRENT_ITERATION".equals(binding.scope()) && !insideIteration(run, scope)) {
                     throw unavailable("CURRENT_ITERATION used outside an iteration");
                 }
                 if ("PARENT".equals(binding.scope())) {
                     scope = run.getScopes().get(scope.getParentScopeId());
-                    if (scope != null && scope.getType() == ScopeType.LOOP) {
+                    while (scope != null && (scope.getType() == ScopeType.LOOP || scope.getType() == ScopeType.PARALLEL)) {
                         scope = run.getScopes().get(scope.getParentScopeId());
                     }
                 }
@@ -58,6 +58,16 @@ public final class InputResolver {
             }
         };
         return binding.source() == InputBinding.Source.LITERAL ? source : path(source, binding.path());
+    }
+
+    private boolean insideIteration(WorkflowRun run, ExecutionScope scope) {
+        while (scope != null) {
+            if (scope.getType() == ScopeType.ITERATION) {
+                return true;
+            }
+            scope = scope.getParentScopeId() == null ? null : run.getScopes().get(scope.getParentScopeId());
+        }
+        return false;
     }
 
     public ExecutionScope loopScope(WorkflowRun run, String scopeId, String loopId) {
