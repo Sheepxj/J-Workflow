@@ -6,6 +6,6 @@ public record InputBinding(Source source, String nodeId, String loopId, String s
     }
 
     public enum Source {
-        LITERAL, RUN_INPUT, NODE_OUTPUT, LOOP_STATE, LOOP_OUTPUT
+        LITERAL, RUN_INPUT, NODE_OUTPUT, NODE_ERROR, LOOP_STATE, LOOP_OUTPUT
     }
 }

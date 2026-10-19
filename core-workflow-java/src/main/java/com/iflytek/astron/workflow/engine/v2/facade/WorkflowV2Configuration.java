@@ -50,7 +50,7 @@ public class WorkflowV2Configuration {
     }
 
     @Bean
-    public ExecutionStore workflowV2Store(ObjectMapper mapper, ObjectProvider<DataSource> sources,
+    public ExecutionStore workflowV2Store(ObjectMapper mapper, @Qualifier("workflowDataSource") ObjectProvider<DataSource> sources,
                                           @Value("${workflow.v2.store:memory}") String storeType,
                                           @Value("${workflow.v2.initialize-schema:false}") boolean initializeSchema) {
         if ("memory".equals(storeType)) {

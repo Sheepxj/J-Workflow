@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iflytek.astron.workflow.engine.v2.definition.Condition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.EdgeType;
+import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.Outcome;
 import com.iflytek.astron.workflow.engine.v2.definition.InputBinding;
 import com.iflytek.astron.workflow.engine.v2.definition.LoopDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.NodeDefinition;
@@ -107,18 +108,15 @@ public final class WorkflowCompiler {
                 require(loops.containsKey(node.id()) && outs.size() == 2, "LOOP requires definition, body and exit edges");
                 require(outs.stream().filter(e -> "body".equals(e.sourcePort())).count() == 1
                         && outs.stream().filter(e -> "exit".equals(e.sourcePort())).count() == 1, "Invalid LOOP ports");
-                require(outs.stream().allMatch(e -> e.condition() == null && !e.defaultEdge()), "LOOP routes are controlled by continueWhen");
+                require(outs.stream().allMatch(e -> e.condition() == null && !e.defaultEdge() && e.on() == Outcome.SUCCESS),
+                        "LOOP routes are controlled by continueWhen");
                 require(incoming.get(node.id()).stream().anyMatch(e -> "enter".equals(e.targetPort())), "Loop entry required");
                 require(incoming.get(node.id()).stream().anyMatch(e -> "continue".equals(e.targetPort())), "Loop continuation required");
             } else if ("FORK".equals(node.type())) {
                 require(node.inputBindings().isEmpty(), "FORK does not accept business input bindings");
-            } else if (node.routing() == Routing.EXCLUSIVE || "XOR".equals(node.type())) {
-                require(!outs.isEmpty() && outs.stream().filter(EdgeDefinition::defaultEdge).count() == 1,
-                        "Exclusive routing requires exactly one default edge");
-                require(outs.stream().allMatch(e -> e.defaultEdge() || e.condition() != null), "Conditional edge required");
             } else {
-                require(outs.size() == 1 && outs.getFirst().condition() == null && !outs.getFirst().defaultEdge(),
-                        "Sequential node requires exactly one unconditional edge: " + node.id());
+                validateRoutes(node, outs.stream().filter(edge -> edge.on() == Outcome.SUCCESS).toList(), true);
+                validateRoutes(node, outs.stream().filter(edge -> edge.on() == Outcome.FAILURE).toList(), false);
             }
             validateBindings(node.inputBindings(), nodes, loopIds);
             if ("JOIN".equals(node.type())) {
@@ -199,7 +197,7 @@ public final class WorkflowCompiler {
         bindings.forEach((name, binding) -> {
             require(present(name) && binding.source() != null, "Invalid input binding");
             switch (binding.source()) {
-                case NODE_OUTPUT -> {
+                case NODE_OUTPUT, NODE_ERROR -> {
                     require(nodes.containsKey(binding.nodeId()), "Unknown referenced node: " + binding.nodeId());
                     require(binding.scope() == null || Set.of("CURRENT", "CURRENT_ITERATION", "PARENT").contains(binding.scope()),
                             "Unknown binding scope");
@@ -210,6 +208,20 @@ public final class WorkflowCompiler {
                 }
             }
         });
+    }
+
+    private void validateRoutes(NodeDefinition node, List<EdgeDefinition> edges, boolean required) {
+        if (!required && edges.isEmpty()) {
+            return;
+        }
+        if (node.routing() == Routing.EXCLUSIVE || "XOR".equals(node.type())) {
+            require(!edges.isEmpty() && edges.stream().filter(EdgeDefinition::defaultEdge).count() == 1,
+                    "Exclusive routing requires exactly one default edge per outcome");
+            require(edges.stream().allMatch(edge -> edge.defaultEdge() || edge.condition() != null), "Conditional edge required");
+        } else {
+            require(edges.size() == 1 && edges.getFirst().condition() == null && !edges.getFirst().defaultEdge(),
+                    "Sequential node requires exactly one unconditional edge per outcome: " + node.id());
+        }
     }
 
     private void validateCondition(Condition condition, boolean loop, int depth) {
@@ -275,6 +287,11 @@ public final class WorkflowCompiler {
             }
             if (definition.limits().maxConcurrentAttempts() == 1) {
                 ((ObjectNode) canonical.get("limits")).remove("maxConcurrentAttempts");
+            }
+            for (int index = 0; index < definition.edges().size(); index++) {
+                if (definition.edges().get(index).on() == Outcome.SUCCESS) {
+                    ((ObjectNode) canonical.withArray("edges").get(index)).remove("on");
+                }
             }
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(canonical)));
         } catch (JsonProcessingException | NoSuchAlgorithmException e) {

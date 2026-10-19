@@ -101,6 +101,7 @@ class WorkflowCompilerTest {
         ObjectNode oldShape = canonicalMapper.valueToTree(definition);
         oldShape.remove("parallels");
         ((ObjectNode) oldShape.get("limits")).remove("maxConcurrentAttempts");
+        oldShape.withArray("edges").forEach(edge -> ((ObjectNode) edge).remove("on"));
         String oldHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(canonicalMapper.writeValueAsBytes(oldShape)));
 

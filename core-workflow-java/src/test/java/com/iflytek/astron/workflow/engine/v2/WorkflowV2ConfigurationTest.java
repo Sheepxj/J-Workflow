@@ -7,8 +7,14 @@ import com.iflytek.astron.workflow.engine.v2.executor.LlmTaskExecutor;
 import com.iflytek.astron.workflow.engine.v2.executor.PluginTaskExecutor;
 import com.iflytek.astron.workflow.engine.v2.facade.WorkflowExecutionFacade;
 import com.iflytek.astron.workflow.engine.v2.facade.WorkflowV2Configuration;
+import com.iflytek.astron.workflow.engine.v2.store.ExecutionStore;
+import com.iflytek.astron.workflow.engine.v2.store.JdbcExecutionStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import javax.sql.DataSource;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -38,5 +44,18 @@ class WorkflowV2ConfigurationTest {
             assertThat(application).hasNotFailed();
             assertThat(application).doesNotHaveBean(WorkflowExecutionFacade.class);
         });
+    }
+
+    @Test
+    void jdbcCheckpointsUseTheWorkflowDatabaseWhenTheLinkDatabaseAlsoExists() {
+        String database = "jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1";
+        context.withPropertyValues("workflow.v2.store=jdbc", "workflow.v2.initialize-schema=true")
+                .withBean("workflowDataSource", DataSource.class, () -> new DriverManagerDataSource(database, "sa", ""))
+                .withBean("linkDataSource", DataSource.class, () -> mock(DataSource.class))
+                .run(application -> {
+                    assertThat(application).hasNotFailed();
+                    assertThat(application.getBean(ExecutionStore.class)).isInstanceOf(JdbcExecutionStore.class);
+                    assertThat(application.getBean(ExecutionStore.class).activeRunIds()).isEmpty();
+                });
     }
 }

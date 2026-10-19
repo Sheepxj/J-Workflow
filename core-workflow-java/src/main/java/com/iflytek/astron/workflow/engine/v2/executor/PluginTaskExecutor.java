@@ -33,7 +33,8 @@ public final class PluginTaskExecutor implements NodeTaskExecutor {
         node.init();
         EngineContext previous = EngineContextHolder.get();
         try {
-            EngineContextHolder.initContext(invocation.runId(), invocation.executionId(), null);
+            EngineContext context = EngineContextHolder.initContext(invocation.runId(), invocation.executionId(), null);
+            context.setIdempotencyKey(invocation.idempotencyKey("plugin"));
             return client.toolCall(new NodeState(node, new VariablePool(), null), invocation.inputs());
         } finally {
             if (previous == null) {

@@ -5,6 +5,7 @@ import com.iflytek.astron.workflow.engine.v2.compiler.CompiledWorkflow;
 import com.iflytek.astron.workflow.engine.v2.compiler.WorkflowCompiler;
 import com.iflytek.astron.workflow.engine.v2.control.ConditionEvaluator;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition;
+import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.Outcome;
 import com.iflytek.astron.workflow.engine.v2.definition.JsonValues;
 import com.iflytek.astron.workflow.engine.v2.definition.LoopDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.NodeDefinition;
@@ -451,14 +452,20 @@ public final class WorkflowScheduler {
             return;
         }
         Map<String, Object> outputs = new LinkedHashMap<>();
+        Map<String, Object> errors = new LinkedHashMap<>();
         branch.getNodeExecutions().forEach((nodeId, executionId) -> {
             NodeExecution execution = run.getExecutions().get(executionId);
-            require(execution.getStatus() == ExecutionStatus.SUCCEEDED, WorkflowError.INVALID_SCOPE,
+            require(execution.getStatus() == ExecutionStatus.SUCCEEDED
+                    || execution.getStatus() == ExecutionStatus.FAILED && execution.isErrorHandled(), WorkflowError.INVALID_SCOPE,
                     "Branch has an uncommitted execution");
-            outputs.put(nodeId, execution.getOutputs());
+            if (execution.getStatus() == ExecutionStatus.SUCCEEDED) {
+                outputs.put(nodeId, execution.getOutputs());
+            } else {
+                errors.put(nodeId, execution.getErrorOutputs());
+            }
         });
         parallel.getArrivals().put(branch.getBranchId(), JsonValues.snapshot(
-                Map.of("nodes", outputs, "loops", branch.getLoopOutputs())));
+                Map.of("nodes", outputs, "errors", errors, "loops", branch.getLoopOutputs())));
         branch.setClosed(true);
         event(run, "BRANCH_ARRIVED", null, null, branch.getScopeId(),
                 Map.of("forkInstanceId", parallel.getForkInstanceId(), "branchId", branch.getBranchId()));
@@ -485,18 +492,22 @@ public final class WorkflowScheduler {
             run.setOutputs(execution.getOutputs());
             return;
         }
-        List<EdgeDefinition> edges = graph.outgoing().get(node.id());
+        List<EdgeDefinition> edges = graph.outgoing().get(node.id()).stream().filter(edge -> edge.on() == Outcome.SUCCESS).toList();
+        emit(run, selectRoute(node, edges, execution.getOutputs()), execution.getScopeId(), execution.getExecutionId());
+    }
+
+    private EdgeDefinition selectRoute(NodeDefinition node, List<EdgeDefinition> edges, Map<String, Object> values) {
         EdgeDefinition selected;
         if (node.routing() == NodeDefinition.Routing.EXCLUSIVE || "XOR".equals(node.type())) {
             List<EdgeDefinition> matching = edges.stream().filter(edge -> edge.condition() != null
-                    && conditions.evaluate(edge.condition(), execution.getOutputs())).toList();
+                    && conditions.evaluate(edge.condition(), values)).toList();
             require(matching.size() <= 1, WorkflowError.ROUTING_ERROR, "Multiple exclusive routes matched");
             selected = matching.isEmpty() ? edges.stream().filter(EdgeDefinition::defaultEdge).findFirst().orElseThrow()
                     : matching.getFirst();
         } else {
             selected = edges.getFirst();
         }
-        emit(run, selected, execution.getScopeId(), execution.getExecutionId());
+        return selected;
     }
 
     private void emitPort(WorkflowRun run, CompiledWorkflow graph, String nodeId, String port, String scopeId,
@@ -527,6 +538,7 @@ public final class WorkflowScheduler {
 
     private void failedAttempt(WorkflowRun run, CompiledWorkflow graph, NodeExecution execution,
                                 WorkflowError code, String message) {
+        message = message == null ? code.name() : message;
         ExecutionAttempt attempt = execution.getAttempts().getLast();
         attempt.setStatus(code == WorkflowError.ATTEMPT_TIMED_OUT ? AttemptStatus.TIMED_OUT : AttemptStatus.FAILED);
         attempt.setFinishedAt(clock.millis());
@@ -540,11 +552,22 @@ public final class WorkflowScheduler {
             execution.setStatus(ExecutionStatus.FAILED);
             execution.setErrorCode(code);
             execution.setError(message);
-            fail(run, code, message);
+            execution.setErrorOutputs(JsonValues.snapshot(Map.of("error", Map.of("code", code.name(), "message", message))));
+            event(run, "NODE_FAILED", execution, attempt, execution.getScopeId(), execution.getErrorOutputs());
+            List<EdgeDefinition> errorEdges = graph.outgoing().get(node.id()).stream()
+                    .filter(edge -> edge.on() == Outcome.FAILURE).toList();
+            if (errorEdges.isEmpty()) {
+                fail(run, code, message);
+            } else {
+                EdgeDefinition selected = selectRoute(node, errorEdges, execution.getErrorOutputs());
+                execution.setErrorHandled(true);
+                emit(run, selected, execution.getScopeId(), execution.getExecutionId());
+            }
         }
     }
 
     private void fail(WorkflowRun run, WorkflowError code, String message) {
+        message = message == null ? code.name() : message;
         run.setStatus(RunStatus.FAILED);
         releaseOwnership(run);
         run.setErrorCode(code);

@@ -2,6 +2,7 @@ package com.iflytek.astron.workflow.engine.v2.compiler;
 
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.EdgeType;
+import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.Outcome;
 import com.iflytek.astron.workflow.engine.v2.definition.NodeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.ParallelDefinition;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowError;
@@ -40,6 +41,7 @@ final class ParallelCompiler {
             for (EdgeDefinition edge : starts) {
                 require(edge.sourcePort() != null && ports.add(edge.sourcePort()) && edge.condition() == null
                         && !edge.defaultEdge() && edge.edgeType() == EdgeType.NORMAL
+                        && edge.on() == Outcome.SUCCESS
                         && edge.target().equals(definition.branches().get(edge.sourcePort())), "Invalid FORK branch edge");
             }
             Map<String, String> members = new HashMap<>();

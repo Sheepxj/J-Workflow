@@ -39,7 +39,7 @@ public final class InputResolver {
                 }
                 yield scope.getLoopOutputs().get(binding.loopId());
             }
-            case NODE_OUTPUT -> {
+            case NODE_OUTPUT, NODE_ERROR -> {
                 if ("CURRENT_ITERATION".equals(binding.scope()) && !insideIteration(run, scope)) {
                     throw unavailable("CURRENT_ITERATION used outside an iteration");
                 }
@@ -51,10 +51,12 @@ public final class InputResolver {
                 }
                 String executionId = scope == null ? null : scope.getNodeExecutions().get(binding.nodeId());
                 NodeExecution execution = executionId == null ? null : run.getExecutions().get(executionId);
-                if (execution == null || execution.getStatus() != ExecutionStatus.SUCCEEDED) {
+                boolean success = binding.source() == InputBinding.Source.NODE_OUTPUT;
+                if (execution == null || (success ? execution.getStatus() != ExecutionStatus.SUCCEEDED
+                        : execution.getStatus() != ExecutionStatus.FAILED || !execution.isErrorHandled())) {
                     throw unavailable("Node output unavailable in requested scope: " + binding.nodeId());
                 }
-                yield execution.getOutputs();
+                yield success ? execution.getOutputs() : execution.getErrorOutputs();
             }
         };
         return binding.source() == InputBinding.Source.LITERAL ? source : path(source, binding.path());

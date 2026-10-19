@@ -46,5 +46,7 @@ public class EngineContextHolder {
         private WorkflowMsgCallback callback;
 
         private String sid;
+
+        private String idempotencyKey;
     }
 }

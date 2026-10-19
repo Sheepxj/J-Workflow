@@ -2,6 +2,8 @@ package com.iflytek.astron.workflow.engine.integration.plugins.aitools;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.iflytek.astron.workflow.engine.context.EngineContextHolder;
+import com.iflytek.astron.workflow.engine.context.EngineContextHolder.EngineContext;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 import java.io.IOException;
@@ -183,6 +185,10 @@ public class Tool {
         // Assemble HTTP parameters and request body
         Map<String, Object>[] params = assembleParameters(actionInput, businessInput);
         Map<String, Object> header = params[0];
+        EngineContext context = EngineContextHolder.get();
+        if (context != null && context.getIdempotencyKey() != null) {
+            header.put("Idempotency-Key", context.getIdempotencyKey());
+        }
         Map<String, Object> query = params[1];
         Map<String, Object> path = params[2];
         Map<String, Object> body = assembleBody(bodySchema, actionInput, businessInput);

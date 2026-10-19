@@ -16,6 +16,8 @@ public class NodeExecution {
     private ExecutionStatus status = ExecutionStatus.READY;
     private Map<String, Object> inputSnapshot = Map.of();
     private Map<String, Object> outputs = Map.of();
+    private Map<String, Object> errorOutputs = Map.of();
+    private boolean errorHandled;
     private List<ExecutionAttempt> attempts = new ArrayList<>();
     private long retryAt;
     private WorkflowError errorCode;
