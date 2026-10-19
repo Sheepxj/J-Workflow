@@ -85,13 +85,13 @@ public final class WorkflowCompiler {
             require(new HashSet<>(loop.bodyNodeIds()).size() == loop.bodyNodeIds().size(), "Duplicate loop body member");
             require(!loop.bodyNodeIds().contains(loop.headerNodeId()), "Header cannot be its own body member");
             for (String member : loop.bodyNodeIds()) {
-                require(nodes.containsKey(member) && !Set.of("START", "END", "LOOP").contains(nodes.get(member).type()),
+                require(nodes.containsKey(member) && !Set.of("START", "END").contains(nodes.get(member).type()),
                         "Unsupported loop body member: " + member);
-                require(owners.putIfAbsent(member, loop.loopId()) == null, "Overlapping/nested loops are not supported yet");
+                require(owners.putIfAbsent(member, loop.loopId()) == null, "Loop body regions cannot partially overlap");
             }
-            require(owners.putIfAbsent(loop.headerNodeId(), loop.loopId()) == null, "Overlapping loop header");
             validateCondition(loop.continueWhen(), true, 0);
         }
+        validateLoopHierarchy(loops, owners);
 
         for (NodeDefinition node : nodes.values()) {
             List<EdgeDefinition> outs = outgoing.get(node.id());
@@ -145,32 +145,40 @@ public final class WorkflowCompiler {
         String targetOwner = owners.get(edge.target());
         boolean sourceHeader = loops.containsKey(edge.source());
         boolean targetHeader = loops.containsKey(edge.target());
+        scope(targetHeader || edge.targetPort() == null, "Only LOOP supports target ports");
+        scope(sourceHeader || edge.sourcePort() == null, "Only LOOP supports source ports");
+        if (sourceHeader) {
+            scope("body".equals(edge.sourcePort()) || "exit".equals(edge.sourcePort()), "Unknown LOOP source port");
+            if ("body".equals(edge.sourcePort())) {
+                sourceOwner = loops.get(edge.source()).loopId();
+            }
+        }
+        if (targetHeader) {
+            scope("enter".equals(edge.targetPort()) || "continue".equals(edge.targetPort()), "Unknown LOOP target port");
+            if ("continue".equals(edge.targetPort())) {
+                targetOwner = loops.get(edge.target()).loopId();
+            }
+        }
+        scope(Objects.equals(sourceOwner, targetOwner), "Edge crosses loop boundary: " + edge.id());
         if (edge.edgeType() == EdgeType.BACK) {
-            scope(targetHeader && !sourceHeader && Objects.equals(sourceOwner, edge.loopId())
+            scope(targetHeader && Objects.equals(sourceOwner, edge.loopId())
                     && Objects.equals(targetOwner, edge.loopId()) && "continue".equals(edge.targetPort()),
                     "Invalid back edge: " + edge.id());
         } else {
             scope(edge.loopId() == null && !"continue".equals(edge.targetPort()), "Undeclared back edge: " + edge.id());
-            if (!Objects.equals(sourceOwner, targetOwner)) {
-                boolean enters = targetHeader && "enter".equals(edge.targetPort());
-                boolean exits = sourceHeader && "exit".equals(edge.sourcePort());
-                scope((sourceOwner == null || exits) && (targetOwner == null || enters),
-                        "Edge crosses loop boundary: " + edge.id());
-            } else if (targetHeader) {
-                scope(false, "Loop return must be a declared BACK edge: " + edge.id());
+        }
+    }
+
+    private void validateLoopHierarchy(Map<String, LoopDefinition> loops, Map<String, String> owners) {
+        Map<String, String> parents = new HashMap<>();
+        loops.values().forEach(loop -> parents.put(loop.loopId(), owners.get(loop.headerNodeId())));
+        for (LoopDefinition loop : loops.values()) {
+            Set<String> ancestors = new HashSet<>();
+            String current = loop.loopId();
+            while (current != null) {
+                scope(ancestors.add(current), "Loop containment cycle: " + loop.loopId());
+                current = parents.get(current);
             }
-        }
-        scope(targetHeader || edge.targetPort() == null, "Only LOOP supports target ports");
-        scope(sourceHeader || edge.sourcePort() == null, "Only LOOP supports source ports");
-        if (targetHeader) {
-            scope("enter".equals(edge.targetPort()) || "continue".equals(edge.targetPort()), "Unknown LOOP target port");
-        }
-        if (sourceHeader && "body".equals(edge.sourcePort())) {
-            scope(Objects.equals(sourceOwner, targetOwner) && !targetHeader, "Body edge must enter its loop body");
-        }
-        if (sourceHeader && "exit".equals(edge.sourcePort())) {
-            scope(targetOwner == null || targetHeader && "enter".equals(edge.targetPort())
-                    && !Objects.equals(sourceOwner, targetOwner), "Loop exit must leave the region");
         }
     }
 
