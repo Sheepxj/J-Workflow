@@ -1,0 +1,58 @@
+{
+  "dslVersion": "2",
+  "definitionId": "generate-and-validate",
+  "version": 1,
+  "limits": { "maxNodeExecutions": 100, "maxDurationMs": 300000 },
+  "nodes": [
+    { "id": "start", "type": "START" },
+    { "id": "loop", "type": "LOOP" },
+    {
+      "id": "generate",
+      "type": "MOCK",
+      "inputBindings": {
+        "draft": { "source": "LOOP_STATE", "loopId": "refine", "path": "draft" }
+      }
+    },
+    {
+      "id": "validate",
+      "type": "MOCK",
+      "inputBindings": {
+        "text": { "source": "NODE_OUTPUT", "nodeId": "generate", "scope": "CURRENT_ITERATION", "path": "text" }
+      }
+    },
+    {
+      "id": "end",
+      "type": "END",
+      "inputBindings": {
+        "result": { "source": "LOOP_OUTPUT", "loopId": "refine", "path": "result" }
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start", "target": "loop", "targetPort": "enter" },
+    { "id": "e2", "source": "loop", "sourcePort": "body", "target": "generate" },
+    { "id": "e3", "source": "generate", "target": "validate" },
+    { "id": "e4", "source": "validate", "target": "loop", "targetPort": "continue", "edgeType": "BACK", "loopId": "refine" },
+    { "id": "e5", "source": "loop", "sourcePort": "exit", "target": "end" }
+  ],
+  "loops": [
+    {
+      "loopId": "refine",
+      "headerNodeId": "loop",
+      "bodyNodeIds": ["generate", "validate"],
+      "maxIterations": 5,
+      "initialState": {
+        "draft": { "source": "RUN_INPUT", "path": "text" },
+        "passed": { "source": "LITERAL", "value": false }
+      },
+      "continueWhen": { "operator": "EQUALS", "statePath": "passed", "value": false },
+      "nextState": {
+        "draft": { "source": "NODE_OUTPUT", "nodeId": "generate", "scope": "CURRENT_ITERATION", "path": "text" },
+        "passed": { "source": "NODE_OUTPUT", "nodeId": "validate", "scope": "CURRENT_ITERATION", "path": "passed" }
+      },
+      "outputBindings": {
+        "result": { "source": "LOOP_STATE", "path": "draft" }
+      }
+    }
+  ]
+}
