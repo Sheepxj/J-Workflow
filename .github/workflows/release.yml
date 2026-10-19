@@ -23,12 +23,6 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
-  attestations: write
-  id-token: write
-
-env:
-  REGISTRY_GHCR: ghcr.io
 
 jobs:
   # ============================================================================
@@ -40,13 +34,7 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       is-prerelease: ${{ steps.meta.outputs.is-prerelease }}
-      has-core-services: ${{ steps.detect.outputs.has-core-services }}
-      has-console-hub: ${{ steps.detect.outputs.has-console-hub }}
-      has-console-frontend: ${{ steps.detect.outputs.has-console-frontend }}
       changelog: ${{ steps.changelog.outputs.changelog }}
-      git-ref: ${{ steps.meta.outputs.git-ref }}
-      commit-sha: ${{ steps.meta.outputs.commit-sha }}
-      cache-scope: ${{ steps.meta.outputs.cache-scope }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -81,7 +69,6 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.tag }}"
             IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
-            GIT_REF="${{ github.event.inputs.tag }}"
           else
             VERSION=${GITHUB_REF#refs/tags/}
             # Check if pre-release version (contains -, alpha, beta, rc, etc.)
@@ -90,7 +77,6 @@ jobs:
             else
               IS_PRERELEASE="true"
             fi
-            GIT_REF="${{ github.ref }}"
           fi
 
           # Validate version format
@@ -100,67 +86,11 @@ jobs:
             exit 1
           fi
 
-          # Get accurate commit SHA (actual commit after checkout)
-          COMMIT_SHA=$(git rev-parse HEAD)
-
-          # Set cache scope for release build
-          # Simplified naming: v1.0.0 -> tag-v1-0-0, v1.0.0-beta.1 -> tag-v1-0-0-beta-1
-          VERSION_SAFE="${VERSION//\./-}"       # Replace dots with hyphens
-          VERSION_SAFE="${VERSION_SAFE//\//-}"  # Replace slashes with hyphens (if any)
-          CACHE_SCOPE="tag-${VERSION_SAFE}"
-
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "is-prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
-          echo "git-ref=$GIT_REF" >> $GITHUB_OUTPUT
-          echo "commit-sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-          echo "cache-scope=$CACHE_SCOPE" >> $GITHUB_OUTPUT
 
           echo "🏷️ Release version: $VERSION"
           echo "🔖 Pre-release: $IS_PRERELEASE"
-          echo "📝 Git Ref: $GIT_REF"
-          echo "📝 Commit SHA: $COMMIT_SHA"
-          echo "💾 Cache Scope: $CACHE_SCOPE"
-
-      - name: Smart project detection
-        id: detect
-        run: |
-          echo "🔍 Detecting Astron Agent components..."
-
-          HAS_CORE_SERVICES="false"
-          HAS_CONSOLE_HUB="false"
-          HAS_CONSOLE_FRONTEND="false"
-
-          # Detect Core service components (based on build-push.yml structure)
-          CORE_COMPONENTS=("tenant" "memory/database" "plugin/rpa" "plugin/link" "plugin/aitools" "agent" "knowledge" "workflow")
-          CORE_COUNT=0
-
-          for component in "${CORE_COMPONENTS[@]}"; do
-            if [[ -f "core/${component}/Dockerfile" ]]; then
-              CORE_COUNT=$((CORE_COUNT + 1))
-              echo "✅ Core component: core/${component}/"
-            fi
-          done
-
-          if [[ $CORE_COUNT -gt 0 ]]; then
-            HAS_CORE_SERVICES="true"
-            echo "✅ Detected $CORE_COUNT Core service components"
-          fi
-
-          # Detect Console Hub (Java)
-          if [[ -f "console/backend/hub/pom.xml" && -f "console/backend/hub/Dockerfile" ]]; then
-            HAS_CONSOLE_HUB="true"
-            echo "✅ Console Hub: console/backend/hub/ (Java Spring Boot)"
-          fi
-
-          # Detect Console Frontend (React)
-          if [[ -f "console/frontend/package.json" && -f "console/frontend/Dockerfile" ]]; then
-            HAS_CONSOLE_FRONTEND="true"
-            echo "✅ Console Frontend: console/frontend/ (React)"
-          fi
-
-          echo "has-core-services=$HAS_CORE_SERVICES" >> $GITHUB_OUTPUT
-          echo "has-console-hub=$HAS_CONSOLE_HUB" >> $GITHUB_OUTPUT
-          echo "has-console-frontend=$HAS_CONSOLE_FRONTEND" >> $GITHUB_OUTPUT
 
       - name: Generate Changelog
         id: changelog
@@ -227,218 +157,13 @@ jobs:
           cat "$CHANGELOG_FILE"
 
   # ============================================================================
-  # Stage 2: Build Docker Images (reuse build-push logic)
-  # ============================================================================
-  build-core-services:
-    name: 🏗️ Build Core Services
-    runs-on: ubuntu-latest
-    needs: prepare-release
-    if: needs.prepare-release.outputs.has-core-services == 'true'
-    strategy:
-      matrix:
-        service:
-          - { name: "tenant", path: "core/tenant", emoji: "🏢" }
-          - { name: "database", path: "core/memory/database", emoji: "🧠" }
-          - { name: "rpa", path: "core/plugin/rpa", emoji: "🤖" }
-          - { name: "link", path: "core/plugin/link", emoji: "🔗" }
-          - { name: "aitools", path: "core/plugin/aitools", emoji: "🛠️" }
-          - { name: "agent", path: "core/agent", emoji: "🤖" }
-          - { name: "knowledge", path: "core/knowledge", emoji: "📚" }
-          - { name: "workflow", path: "core/workflow", emoji: "⚡" }
-      fail-fast: false  # Allow partial service failure without affecting others
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-release.outputs.git-ref }}
-          fetch-depth: 0
-
-      - name: Validate Dockerfile existence
-        id: validate
-        run: |
-          DOCKERFILE_PATH="./${{ matrix.service.path }}/Dockerfile"
-          if [[ ! -f "$DOCKERFILE_PATH" ]]; then
-            echo "⚠️ Dockerfile does not exist: $DOCKERFILE_PATH"
-            echo "⏭️ Skipping this service build"
-            echo "skip=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          echo "✅ Dockerfile exists: $DOCKERFILE_PATH"
-          echo "skip=false" >> $GITHUB_OUTPUT
-
-      - name: Set up QEMU
-        if: steps.validate.outputs.skip != 'true'
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        if: steps.validate.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        if: steps.validate.outputs.skip != 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY_GHCR }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        if: steps.validate.outputs.skip != 'true'
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY_GHCR }}/${{ github.repository }}/core-${{ matrix.service.name }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=${{ needs.prepare-release.outputs.version }}
-
-      - name: Build and push ${{ matrix.service.emoji }} ${{ matrix.service.name }} image
-        if: steps.validate.outputs.skip != 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./${{ matrix.service.path }}/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ needs.prepare-release.outputs.version }}
-            GIT_COMMIT=${{ needs.prepare-release.outputs.commit-sha }}
-            BUILD_TIME=${{ github.run_id }}
-          cache-from: |
-            type=gha,scope=core-${{ matrix.service.name }}-${{ needs.prepare-release.outputs.cache-scope }}
-            type=gha,scope=core-${{ matrix.service.name }}-branch-main
-          cache-to: type=gha,scope=core-${{ matrix.service.name }}-${{ needs.prepare-release.outputs.cache-scope }},mode=max
-
-  build-console-hub:
-    name: ☕ Build Console Hub
-    runs-on: ubuntu-latest
-    needs: prepare-release
-    if: needs.prepare-release.outputs.has-console-hub == 'true'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-release.outputs.git-ref }}
-          fetch-depth: 0
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY_GHCR }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY_GHCR }}/${{ github.repository }}/console-hub
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=${{ needs.prepare-release.outputs.version }}
-
-      - name: Build and push Console Hub image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./console/backend/hub/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ needs.prepare-release.outputs.version }}
-            GIT_COMMIT=${{ needs.prepare-release.outputs.commit-sha }}
-            BUILD_TIME=${{ github.run_id }}
-          cache-from: |
-            type=gha,scope=console-hub-${{ needs.prepare-release.outputs.cache-scope }}
-            type=gha,scope=console-hub-branch-main
-          cache-to: type=gha,scope=console-hub-${{ needs.prepare-release.outputs.cache-scope }},mode=max
-          provenance: false
-          sbom: false
-
-  build-console-frontend:
-    name: 🌐 Build Console Frontend
-    runs-on: ubuntu-latest
-    needs: prepare-release
-    if: needs.prepare-release.outputs.has-console-frontend == 'true'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-release.outputs.git-ref }}
-          fetch-depth: 0
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          install: true
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY_GHCR }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY_GHCR }}/${{ github.repository }}/console-frontend
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=${{ needs.prepare-release.outputs.version }}
-
-      - name: Build and push Console Frontend image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./console/frontend/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ needs.prepare-release.outputs.version }}
-            GIT_COMMIT=${{ needs.prepare-release.outputs.commit-sha }}
-            BUILD_TIME=${{ github.run_id }}
-          cache-from: |
-            type=gha,scope=console-frontend-${{ needs.prepare-release.outputs.cache-scope }}
-            type=gha,scope=console-frontend-branch-main
-          cache-to: type=gha,mode=max,scope=console-frontend-${{ needs.prepare-release.outputs.cache-scope }}
-
-  # ============================================================================
-  # Stage 3: Create GitHub Release
+  # Stage 2: Create GitHub Release
   # ============================================================================
   create-release:
     name: 🎉 Create GitHub Release
     runs-on: ubuntu-latest
     needs:
       - prepare-release
-      - build-core-services
-      - build-console-hub
-      - build-console-frontend
     if: always() && needs.prepare-release.result == 'success'
     steps:
       - name: Create GitHub Release
@@ -459,19 +184,6 @@ jobs:
           echo "🏷️ Version: ${{ needs.prepare-release.outputs.version }}"
           echo "🔖 Pre-release: ${{ needs.prepare-release.outputs.is-prerelease }}"
           echo "📦 Release page: https://github.com/${{ github.repository }}/releases/tag/${{ needs.prepare-release.outputs.version }}"
-          echo ""
-
-          echo "🐳 Docker image build status:"
-          echo "  🏗️ Core services: ${{ needs.build-core-services.result }}"
-          echo "  ☕ Console Hub: ${{ needs.build-console-hub.result }}"
-          echo "  🌐 Console Frontend: ${{ needs.build-console-frontend.result }}"
-          echo ""
-
-          echo "🎯 Quick start:"
-          echo "git clone https://github.com/${{ github.repository }}.git"
-          echo "cd astron-agent"
-          echo "git checkout ${{ needs.prepare-release.outputs.version }}"
-          echo "docker-compose up -d"
           echo ""
 
           echo "✅ 🚀 Astron Agent release completed!"
