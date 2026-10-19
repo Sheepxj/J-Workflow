@@ -13,7 +13,7 @@ public final class RuntimeStatus {
     }
 
     public enum ExecutionStatus {
-        READY, RUNNING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED;
+        READY, RUNNING, RETRY_WAIT, RECOVERY_REQUIRED, SUCCEEDED, FAILED, CANCELLED;
 
         public boolean terminal() {
             return this == SUCCEEDED || this == FAILED || this == CANCELLED;
@@ -21,7 +21,7 @@ public final class RuntimeStatus {
     }
 
     public enum AttemptStatus {
-        READY, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED
+        READY, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, INTERRUPTED, CANCELLED
     }
 
     public enum ScopeType {

@@ -44,6 +44,10 @@ public final class WorkflowExecutionFacade implements AutoCloseable {
         scheduler.cancel(runId);
     }
 
+    public void resolveInterrupted(String runId, String executionId, boolean retry, Map<String, Object> outputs) {
+        scheduler.resolveInterrupted(runId, executionId, retry, outputs);
+    }
+
     private void advance() {
         try {
             for (String runId : store.activeRunIds()) {

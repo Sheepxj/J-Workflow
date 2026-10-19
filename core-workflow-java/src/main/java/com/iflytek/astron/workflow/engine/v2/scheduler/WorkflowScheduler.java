@@ -30,10 +30,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class WorkflowScheduler {
     private final WorkflowCompiler compiler;
@@ -45,6 +47,8 @@ public final class WorkflowScheduler {
     private final ConditionEvaluator conditions = new ConditionEvaluator();
     private final Map<String, CompiledWorkflow> compiledRuns = new ConcurrentHashMap<>();
     private final Map<String, PhysicalAttempt> physicalAttempts = new ConcurrentHashMap<>();
+    private final String ownerId = UUID.randomUUID().toString();
+    private static final long LEASE_MILLIS = 30000;
 
     public WorkflowScheduler(WorkflowCompiler compiler, ExecutionStore store, List<NodeTaskExecutor> executors,
                              Executor workers, Clock clock) {
@@ -88,7 +92,12 @@ public final class WorkflowScheduler {
                 return;
             }
             try {
+                if (!claimOwnership(run)) {
+                    return;
+                }
                 CompiledWorkflow graph = compiledRuns.computeIfAbsent(runId, key -> compiler.compile(run.getDefinition()));
+                require(graph.contentHash().equals(run.getDefinitionHash()), WorkflowError.INVALID_DEFINITION,
+                        "Stored definition hash differs from the run definition");
                 require(clock.millis() - run.getStartedAt() < graph.definition().limits().maxDurationMs(),
                         WorkflowError.BUDGET_EXCEEDED, "Workflow duration exceeded");
                 expireAttempts(run, graph);
@@ -98,11 +107,18 @@ public final class WorkflowScheduler {
                 if (run.getStatus() == RunStatus.PAUSING) {
                     if (running(run) == null && !physicalAttempts.containsKey(runId)) {
                         run.setStatus(RunStatus.PAUSED);
+                        releaseOwnership(run);
                         event(run, "RUN_PAUSED", null, null, null, Map.of());
                     }
                     return;
                 }
                 if (running(run) != null || physicalAttempts.containsKey(runId)) {
+                    return;
+                }
+                NodeExecution ready = run.getExecutions().values().stream()
+                        .filter(execution -> execution.getStatus() == ExecutionStatus.READY).findFirst().orElse(null);
+                if (ready != null) {
+                    dispatch.add(invocation(run, graph, ready, ready.getAttempts().getLast(), new AtomicBoolean()));
                     return;
                 }
                 NodeExecution waiting = run.getExecutions().values().stream()
@@ -122,6 +138,7 @@ public final class WorkflowScheduler {
                 require(run.isEndReached() && closed, WorkflowError.CONTROL_FLOW_STALLED,
                         "No runnable work remains before a valid completion");
                 run.setStatus(RunStatus.SUCCEEDED);
+                releaseOwnership(run);
                 event(run, "RUN_SUCCEEDED", null, null, null, run.getOutputs());
             } catch (WorkflowExecutionException e) {
                 fail(run, e.getCode(), e.getMessage());
@@ -145,6 +162,8 @@ public final class WorkflowScheduler {
     public void resume(String runId) {
         store.update(runId, run -> {
             if (run.getStatus() == RunStatus.PAUSED) {
+                require(run.getExecutions().values().stream().noneMatch(item -> item.getStatus() == ExecutionStatus.RECOVERY_REQUIRED),
+                        WorkflowError.RECOVERY_REQUIRED, "Resolve interrupted executions before resuming");
                 run.setStatus(RunStatus.RUNNING);
                 event(run, "RUN_RESUMED", null, null, null, Map.of());
             } else {
@@ -157,6 +176,7 @@ public final class WorkflowScheduler {
         store.update(runId, run -> {
             if (!run.getStatus().terminal()) {
                 run.setStatus(RunStatus.CANCELLED);
+                releaseOwnership(run);
                 stopPending(run);
                 event(run, "RUN_CANCELLED", null, null, null, Map.of());
             }
@@ -168,7 +188,8 @@ public final class WorkflowScheduler {
         physicalAttempts.computeIfPresent(runId, (key, physical) -> physical.id().equals(attemptId) ? null : physical);
         store.update(runId, run -> {
             NodeExecution execution = run.getExecutions().get(executionId);
-            if (run.getStatus().terminal() || execution == null || execution.getStatus() != ExecutionStatus.RUNNING) {
+            if (run.getStatus().terminal() || !ownerId.equals(run.getOwnerId()) || run.getLeaseUntil() <= clock.millis()
+                    || execution == null || execution.getStatus() != ExecutionStatus.RUNNING) {
                 return;
             }
             ExecutionAttempt attempt = execution.getAttempts().getLast();
@@ -232,28 +253,60 @@ public final class WorkflowScheduler {
 
     private void prepareAttempt(WorkflowRun run, CompiledWorkflow graph, NodeExecution execution,
                                  List<NodeInvocation> dispatch) {
-        NodeDefinition node = graph.nodes().get(execution.getNodeId());
         ExecutionAttempt attempt = new ExecutionAttempt();
         attempt.setAttemptId(id());
         attempt.setAttemptNo(execution.getAttempts().size() + 1);
-        attempt.setStartedAt(clock.millis());
-        attempt.setDeadline(saturatingAdd(clock.millis(), node.retry().timeoutMs()));
-        attempt.setStatus(AttemptStatus.RUNNING);
         execution.getAttempts().add(attempt);
-        execution.setStatus(ExecutionStatus.RUNNING);
-        AtomicBoolean cancelled = new AtomicBoolean();
-        PhysicalAttempt physical = new PhysicalAttempt(attempt.getAttemptId(), cancelled);
-        require(physicalAttempts.putIfAbsent(run.getRunId(), physical) == null,
-                WorkflowError.INVALID_RUN_STATE, "Physical attempt already running");
-        ExecutionScope scope = run.getScopes().get(execution.getScopeId());
-        dispatch.add(new NodeInvocation(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(),
-                attempt.getAttemptNo(), scope.getScopeId(), scope.getIterationNo(), node,
-                JsonValues.snapshot(execution.getInputSnapshot()), attempt.getDeadline(), cancelled::get,
-                (type, data) -> recordStream(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(), type, data)));
-        event(run, "NODE_ATTEMPT_STARTED", execution, attempt, scope.getScopeId(), execution.getInputSnapshot());
+        execution.setStatus(ExecutionStatus.READY);
+        dispatch.add(invocation(run, graph, execution, attempt, new AtomicBoolean()));
+        event(run, "NODE_ATTEMPT_QUEUED", execution, attempt, execution.getScopeId(), Map.of());
     }
 
-    private void dispatch(NodeInvocation invocation) {
+    private NodeInvocation invocation(WorkflowRun run, CompiledWorkflow graph, NodeExecution execution,
+                                       ExecutionAttempt attempt, AtomicBoolean cancelled) {
+        NodeDefinition node = graph.nodes().get(execution.getNodeId());
+        ExecutionScope scope = run.getScopes().get(execution.getScopeId());
+        return new NodeInvocation(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(),
+                attempt.getAttemptNo(), scope.getScopeId(), scope.getIterationNo(), node,
+                JsonValues.snapshot(execution.getInputSnapshot()), attempt.getDeadline(), cancelled::get,
+                (type, data) -> recordStream(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(), type, data));
+    }
+
+    private void dispatch(NodeInvocation planned) {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        PhysicalAttempt physical = new PhysicalAttempt(planned.attemptId(), cancelled);
+        if (physicalAttempts.putIfAbsent(planned.runId(), physical) != null) {
+            return;
+        }
+        AtomicReference<NodeInvocation> claimed = new AtomicReference<>();
+        try {
+            store.update(planned.runId(), run -> {
+                NodeExecution execution = run.getExecutions().get(planned.executionId());
+                if (run.getStatus() != RunStatus.RUNNING || !ownerId.equals(run.getOwnerId())
+                        || run.getLeaseUntil() <= clock.millis() || execution == null
+                        || execution.getStatus() != ExecutionStatus.READY) {
+                    return;
+                }
+                ExecutionAttempt attempt = execution.getAttempts().getLast();
+                if (!attempt.getAttemptId().equals(planned.attemptId()) || attempt.getStatus() != AttemptStatus.READY) {
+                    return;
+                }
+                attempt.setStartedAt(clock.millis());
+                attempt.setDeadline(saturatingAdd(clock.millis(), planned.node().retry().timeoutMs()));
+                attempt.setStatus(AttemptStatus.RUNNING);
+                execution.setStatus(ExecutionStatus.RUNNING);
+                claimed.set(invocation(run, compiledRuns.get(planned.runId()), execution, attempt, cancelled));
+                event(run, "NODE_ATTEMPT_STARTED", execution, attempt, execution.getScopeId(), execution.getInputSnapshot());
+            });
+        } catch (RuntimeException e) {
+            physicalAttempts.remove(planned.runId(), physical);
+            throw e;
+        }
+        NodeInvocation invocation = claimed.get();
+        if (invocation == null) {
+            physicalAttempts.remove(planned.runId(), physical);
+            return;
+        }
         try {
             workers.execute(() -> {
                 try {
@@ -286,7 +339,8 @@ public final class WorkflowScheduler {
     private void recordStream(String runId, String executionId, String attemptId, String type, Map<String, Object> data) {
         store.update(runId, run -> {
             NodeExecution execution = run.getExecutions().get(executionId);
-            if (run.getStatus().terminal() || execution == null || execution.getStatus() != ExecutionStatus.RUNNING) {
+            if (run.getStatus().terminal() || !ownerId.equals(run.getOwnerId()) || run.getLeaseUntil() <= clock.millis()
+                    || execution == null || execution.getStatus() != ExecutionStatus.RUNNING) {
                 return;
             }
             ExecutionAttempt attempt = execution.getAttempts().getLast();
@@ -398,6 +452,7 @@ public final class WorkflowScheduler {
 
     private void fail(WorkflowRun run, WorkflowError code, String message) {
         run.setStatus(RunStatus.FAILED);
+        releaseOwnership(run);
         run.setErrorCode(code);
         run.setError(message);
         stopPending(run);
@@ -416,6 +471,75 @@ public final class WorkflowScheduler {
         if (physical != null) {
             physical.cancelled().set(true);
         }
+    }
+
+    public void resolveInterrupted(String runId, String executionId, boolean retry, Map<String, Object> outputs) {
+        store.update(runId, run -> {
+            require(run.getStatus() == RunStatus.PAUSED, WorkflowError.INVALID_RUN_STATE, "Run must be paused");
+            NodeExecution execution = run.getExecutions().get(executionId);
+            require(execution != null && execution.getStatus() == ExecutionStatus.RECOVERY_REQUIRED,
+                    WorkflowError.INVALID_RUN_STATE, "Execution does not need recovery");
+            CompiledWorkflow graph = compiledRuns.computeIfAbsent(runId, key -> compiler.compile(run.getDefinition()));
+            if (retry) {
+                require(execution.getAttempts().size() < graph.nodes().get(execution.getNodeId()).retry().maxAttempts(),
+                        WorkflowError.INVALID_RUN_STATE, "Attempt budget exhausted; resolve with known result or cancel");
+                execution.setStatus(ExecutionStatus.RETRY_WAIT);
+                execution.setRetryAt(clock.millis());
+            } else {
+                execution.setOutputs(JsonValues.snapshot(outputs));
+                execution.setStatus(ExecutionStatus.SUCCEEDED);
+                route(run, graph, execution);
+            }
+            event(run, "EXECUTION_RECOVERY_RESOLVED", execution, null, execution.getScopeId(), Map.of("retry", retry));
+        });
+    }
+
+    private boolean claimOwnership(WorkflowRun run) {
+        if (ownerId.equals(run.getOwnerId())) {
+            run.setLeaseUntil(saturatingAdd(clock.millis(), LEASE_MILLIS));
+            return true;
+        }
+        if (run.getOwnerId() != null && run.getLeaseUntil() > clock.millis()) {
+            return false;
+        }
+        boolean interrupted = false;
+        for (NodeExecution execution : run.getExecutions().values()) {
+            if (execution.getStatus() != ExecutionStatus.RUNNING) {
+                continue;
+            }
+            interrupted = true;
+            ExecutionAttempt attempt = execution.getAttempts().getLast();
+            attempt.setStatus(AttemptStatus.INTERRUPTED);
+            attempt.setFinishedAt(clock.millis());
+            attempt.setError("Previous scheduler lease expired before a result was committed");
+            NodeDefinition node = run.getDefinition().nodes().stream()
+                    .filter(item -> item.id().equals(execution.getNodeId())).findFirst().orElseThrow();
+            boolean safe = Set.of("START", "END", "XOR", "MOCK").contains(node.type());
+            String recovery = String.valueOf(node.config().getOrDefault("recovery", safe ? "RETRY" : "MANUAL"));
+            if ("RETRY".equals(recovery) && execution.getAttempts().size() < node.retry().maxAttempts()) {
+                execution.setStatus(ExecutionStatus.RETRY_WAIT);
+                execution.setRetryAt(clock.millis());
+            } else {
+                execution.setStatus(ExecutionStatus.RECOVERY_REQUIRED);
+                run.setStatus(RunStatus.PAUSED);
+            }
+            event(run, "EXECUTION_INTERRUPTED", execution, attempt, execution.getScopeId(), Map.of("recovery", recovery));
+        }
+        if (interrupted) {
+            event(run, "RUN_RECOVERED", null, null, null, Map.of());
+        }
+        if (run.getStatus() == RunStatus.PAUSED) {
+            releaseOwnership(run);
+            return false;
+        }
+        run.setOwnerId(ownerId);
+        run.setLeaseUntil(saturatingAdd(clock.millis(), LEASE_MILLIS));
+        return true;
+    }
+
+    private void releaseOwnership(WorkflowRun run) {
+        run.setOwnerId(null);
+        run.setLeaseUntil(0);
     }
 
     private ExecutionScope scope(WorkflowRun run, ScopeType type, String parent, String loopId, int iteration) {

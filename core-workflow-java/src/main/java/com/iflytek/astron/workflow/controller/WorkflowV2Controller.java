@@ -68,16 +68,33 @@ public class WorkflowV2Controller {
         return ResponseEntity.accepted().build();
     }
 
+    @PostMapping("/{runId}/executions/{executionId}/resolve")
+    public ResponseEntity<Void> resolve(@PathVariable String runId, @PathVariable String executionId,
+                                         @RequestBody RecoveryRequest request) {
+        if (request.action() == null) {
+            throw new WorkflowExecutionException(WorkflowError.INVALID_DEFINITION, "Recovery action required");
+        }
+        facade.resolveInterrupted(runId, executionId, request.action() == RecoveryAction.RETRY, request.outputs());
+        return ResponseEntity.accepted().build();
+    }
+
     @ExceptionHandler(WorkflowExecutionException.class)
     public ResponseEntity<Map<String, String>> workflowError(WorkflowExecutionException error) {
         HttpStatus status = switch (error.getCode()) {
             case RUN_NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case INVALID_RUN_STATE, STALE_REVISION -> HttpStatus.CONFLICT;
+            case INVALID_RUN_STATE, STALE_REVISION, RECOVERY_REQUIRED -> HttpStatus.CONFLICT;
             default -> HttpStatus.BAD_REQUEST;
         };
         return ResponseEntity.status(status).body(Map.of("code", error.getCode().name(), "message", error.getMessage()));
     }
 
     public record StartRequest(WorkflowDefinition definition, Map<String, Object> inputs) {
+    }
+
+    public enum RecoveryAction {
+        RETRY, COMPLETE
+    }
+
+    public record RecoveryRequest(RecoveryAction action, Map<String, Object> outputs) {
     }
 }

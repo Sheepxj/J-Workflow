@@ -19,6 +19,8 @@ public class WorkflowRun {
     private String definitionHash;
     private RunStatus status = RunStatus.RUNNING;
     private long revision;
+    private String ownerId;
+    private long leaseUntil;
     private long startedAt;
     private int controlTransitions;
     private String rootScopeId;

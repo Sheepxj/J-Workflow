@@ -11,6 +11,9 @@ import com.iflytek.astron.workflow.engine.v2.executor.NodeTaskExecutor;
 import com.iflytek.astron.workflow.engine.v2.scheduler.WorkflowScheduler;
 import com.iflytek.astron.workflow.engine.v2.store.ExecutionStore;
 import com.iflytek.astron.workflow.engine.v2.store.InMemoryExecutionStore;
+import com.iflytek.astron.workflow.engine.v2.store.JdbcExecutionStore;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -18,6 +21,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Clock;
+import javax.sql.DataSource;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -46,8 +50,16 @@ public class WorkflowV2Configuration {
     }
 
     @Bean
-    public ExecutionStore workflowV2Store(ObjectMapper mapper) {
-        return new InMemoryExecutionStore(mapper);
+    public ExecutionStore workflowV2Store(ObjectMapper mapper, ObjectProvider<DataSource> sources,
+                                          @Value("${workflow.v2.store:memory}") String storeType,
+                                          @Value("${workflow.v2.initialize-schema:false}") boolean initializeSchema) {
+        if ("memory".equals(storeType)) {
+            return new InMemoryExecutionStore(mapper);
+        }
+        if ("jdbc".equals(storeType)) {
+            return new JdbcExecutionStore(sources.getObject(), mapper, initializeSchema);
+        }
+        throw new IllegalArgumentException("Unknown workflow.v2.store: " + storeType);
     }
 
     @Bean(destroyMethod = "shutdownNow")

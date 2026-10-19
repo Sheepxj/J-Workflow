@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowError;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowExecutionException;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowRun;
+import com.iflytek.astron.workflow.engine.v2.runtime.RuntimeStatus.RunStatus;
 
 import java.util.HashSet;
 import java.util.Map;
@@ -48,7 +49,7 @@ public final class InMemoryExecutionStore implements ExecutionStore {
         Set<String> active = new HashSet<>();
         runs.forEach((id, run) -> {
             synchronized (run) {
-                if (!run.getStatus().terminal()) {
+                if (run.getStatus() == RunStatus.RUNNING || run.getStatus() == RunStatus.PAUSING) {
                     active.add(id);
                 }
             }
