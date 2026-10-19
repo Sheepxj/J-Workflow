@@ -248,7 +248,8 @@ public final class WorkflowScheduler {
         ExecutionScope scope = run.getScopes().get(execution.getScopeId());
         dispatch.add(new NodeInvocation(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(),
                 attempt.getAttemptNo(), scope.getScopeId(), scope.getIterationNo(), node,
-                JsonValues.snapshot(execution.getInputSnapshot()), attempt.getDeadline(), cancelled::get));
+                JsonValues.snapshot(execution.getInputSnapshot()), attempt.getDeadline(), cancelled::get,
+                (type, data) -> recordStream(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(), type, data)));
         event(run, "NODE_ATTEMPT_STARTED", execution, attempt, scope.getScopeId(), execution.getInputSnapshot());
     }
 
@@ -280,6 +281,20 @@ public final class WorkflowScheduler {
             complete(invocation.runId(), invocation.executionId(), invocation.attemptId(), Map.of(),
                     WorkflowError.NODE_FAILED, "Task dispatch rejected");
         }
+    }
+
+    private void recordStream(String runId, String executionId, String attemptId, String type, Map<String, Object> data) {
+        store.update(runId, run -> {
+            NodeExecution execution = run.getExecutions().get(executionId);
+            if (run.getStatus().terminal() || execution == null || execution.getStatus() != ExecutionStatus.RUNNING) {
+                return;
+            }
+            ExecutionAttempt attempt = execution.getAttempts().getLast();
+            if (attempt.getAttemptId().equals(attemptId) && clock.millis() < attempt.getDeadline()) {
+                event(run, "NODE_STREAM", execution, attempt, execution.getScopeId(),
+                        Map.of("kind", type, "payload", JsonValues.snapshot(data)));
+            }
+        });
     }
 
     private void advanceLoop(WorkflowRun run, CompiledWorkflow graph, ControlToken token) {
