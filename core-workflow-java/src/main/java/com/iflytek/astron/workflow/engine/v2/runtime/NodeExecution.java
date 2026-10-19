@@ -13,8 +13,10 @@ public class NodeExecution {
     private String nodeId;
     private String scopeId;
     private String activationId;
+    private String causeExecutionId;
     private ExecutionStatus status = ExecutionStatus.READY;
     private Map<String, Object> inputSnapshot = Map.of();
+    private Map<String, InputOrigin> inputOrigins = Map.of();
     private Map<String, Object> outputs = Map.of();
     private Map<String, Object> errorOutputs = Map.of();
     private boolean errorHandled;

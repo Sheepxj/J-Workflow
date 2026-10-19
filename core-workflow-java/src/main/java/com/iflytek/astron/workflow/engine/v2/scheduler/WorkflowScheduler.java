@@ -17,6 +17,7 @@ import com.iflytek.astron.workflow.engine.v2.runtime.ControlToken;
 import com.iflytek.astron.workflow.engine.v2.runtime.ExecutionAttempt;
 import com.iflytek.astron.workflow.engine.v2.runtime.ExecutionScope;
 import com.iflytek.astron.workflow.engine.v2.runtime.NodeExecution;
+import com.iflytek.astron.workflow.engine.v2.runtime.InputOrigin;
 import com.iflytek.astron.workflow.engine.v2.runtime.ParallelRuntime;
 import com.iflytek.astron.workflow.engine.v2.runtime.RunEvent;
 import com.iflytek.astron.workflow.engine.v2.runtime.RuntimeStatus.AttemptStatus;
@@ -86,6 +87,10 @@ public final class WorkflowScheduler {
 
     public WorkflowRun get(String runId) {
         return store.get(runId);
+    }
+
+    public Set<String> registeredNodeTypes() {
+        return Set.copyOf(executors.keySet());
     }
 
     public void tick(String runId) {
@@ -271,9 +276,18 @@ public final class WorkflowScheduler {
         execution.setNodeId(node.id());
         execution.setScopeId(scope.getScopeId());
         execution.setActivationId(token.tokenId());
+        execution.setCauseExecutionId(token.causeExecutionId());
         Map<String, Object> inputs = suppliedInputs == null ? resolver.resolve(node.inputBindings(), run, scope.getScopeId())
                 : JsonValues.snapshot(suppliedInputs);
         execution.setInputSnapshot("START".equals(node.type()) && node.inputBindings().isEmpty() ? run.getInputs() : inputs);
+        execution.setInputOrigins(suppliedInputs == null ? resolver.origins(node.inputBindings(), run, scope.getScopeId())
+                : Map.of("branches", new InputOrigin("JOIN_COLLECTION", null, token.tokenId(), null, 0)));
+        if ("START".equals(node.type()) && node.inputBindings().isEmpty()) {
+            Map<String, InputOrigin> origins = new LinkedHashMap<>();
+            run.getInputs().keySet().forEach(name -> origins.put(name,
+                    new InputOrigin("RUN_INPUT", null, run.getRootScopeId(), name, 0)));
+            execution.setInputOrigins(Map.copyOf(origins));
+        }
         run.getExecutions().put(execution.getExecutionId(), execution);
         scope.getNodeExecutions().put(node.id(), execution.getExecutionId());
         prepareAttempt(run, graph, execution, dispatch);
@@ -294,10 +308,13 @@ public final class WorkflowScheduler {
                                        ExecutionAttempt attempt, AtomicBoolean cancelled) {
         NodeDefinition node = graph.nodes().get(execution.getNodeId());
         ExecutionScope scope = run.getScopes().get(execution.getScopeId());
-        return new NodeInvocation(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(),
+        String runId = run.getRunId();
+        String executionId = execution.getExecutionId();
+        String attemptId = attempt.getAttemptId();
+        return new NodeInvocation(runId, executionId, attemptId,
                 attempt.getAttemptNo(), scope.getScopeId(), scope.getIterationNo(), node,
                 JsonValues.snapshot(execution.getInputSnapshot()), attempt.getDeadline(), cancelled::get,
-                (type, data) -> recordStream(run.getRunId(), execution.getExecutionId(), attempt.getAttemptId(), type, data));
+                (type, data) -> recordStream(runId, executionId, attemptId, type, data));
     }
 
     private void dispatch(NodeInvocation planned) {
@@ -404,6 +421,7 @@ public final class WorkflowScheduler {
         if (!conditions.evaluate(definition.continueWhen(), loop.getLocalState())) {
             Map<String, Object> outputs = resolver.resolve(definition.outputBindings(), run, loop.getScopeId());
             run.getScopes().get(loop.getParentScopeId()).getLoopOutputs().put(definition.loopId(), outputs);
+            run.getScopes().get(loop.getParentScopeId()).getLoopOutputSources().put(definition.loopId(), loop.getScopeId());
             loop.setClosed(true);
             emitPort(run, graph, definition.headerNodeId(), "exit", loop.getParentScopeId(), null);
             event(run, "LOOP_COMPLETED", null, null, loop.getScopeId(), outputs);
@@ -580,8 +598,12 @@ public final class WorkflowScheduler {
         run.getTokens().clear();
         run.getExecutions().values().stream().filter(execution -> !execution.getStatus().terminal()).forEach(execution -> {
             execution.setStatus(ExecutionStatus.CANCELLED);
-            if (!execution.getAttempts().isEmpty() && execution.getAttempts().getLast().getStatus() == AttemptStatus.RUNNING) {
-                execution.getAttempts().getLast().setStatus(AttemptStatus.CANCELLED);
+            if (!execution.getAttempts().isEmpty()) {
+                ExecutionAttempt attempt = execution.getAttempts().getLast();
+                if (attempt.getStatus() == AttemptStatus.RUNNING || attempt.getStatus() == AttemptStatus.READY) {
+                    attempt.setStatus(AttemptStatus.CANCELLED);
+                    attempt.setFinishedAt(clock.millis());
+                }
             }
         });
         physicalAttempts.values().stream().filter(physical -> physical.runId().equals(run.getRunId()))
@@ -676,10 +698,16 @@ public final class WorkflowScheduler {
     private void event(WorkflowRun run, String type, NodeExecution execution, ExecutionAttempt attempt,
                          String scopeId, Map<String, Object> data) {
         ExecutionScope scope = scopeId == null ? null : run.getScopes().get(scopeId);
+        List<String> scopePath = new ArrayList<>();
+        ExecutionScope ancestor = scope;
+        while (ancestor != null) {
+            scopePath.addFirst(ancestor.getScopeId());
+            ancestor = ancestor.getParentScopeId() == null ? null : run.getScopes().get(ancestor.getParentScopeId());
+        }
         run.getEvents().add(new RunEvent(id(), run.getEvents().size() + 1L, clock.millis(), type, run.getRunId(),
                 execution == null ? null : execution.getNodeId(), execution == null ? null : execution.getExecutionId(),
                 attempt == null ? null : attempt.getAttemptId(), scopeId, scope == null ? 0 : scope.getIterationNo(),
-                JsonValues.snapshot(data)));
+                JsonValues.snapshot(data), scopePath));
     }
 
     private long saturatingAdd(long value, long delta) {

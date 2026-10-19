@@ -12,10 +12,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public final class PluginTaskExecutor implements NodeTaskExecutor {
-    private final PluginServiceClient client;
+    private final PluginCall caller;
 
     public PluginTaskExecutor(PluginServiceClient client) {
-        this.client = client;
+        this(client::toolCall);
+    }
+
+    public PluginTaskExecutor(PluginCall caller) {
+        this.caller = caller;
     }
 
     @Override
@@ -35,7 +39,7 @@ public final class PluginTaskExecutor implements NodeTaskExecutor {
         try {
             EngineContext context = EngineContextHolder.initContext(invocation.runId(), invocation.executionId(), null);
             context.setIdempotencyKey(invocation.idempotencyKey("plugin"));
-            return client.toolCall(new NodeState(node, new VariablePool(), null), invocation.inputs());
+            return caller.call(new NodeState(node, new VariablePool(), null), invocation.inputs());
         } finally {
             if (previous == null) {
                 EngineContextHolder.remove();
@@ -43,5 +47,10 @@ public final class PluginTaskExecutor implements NodeTaskExecutor {
                 EngineContextHolder.set(previous);
             }
         }
+    }
+
+    @FunctionalInterface
+    public interface PluginCall {
+        Map<String, Object> call(NodeState state, Map<String, Object> inputs) throws Exception;
     }
 }

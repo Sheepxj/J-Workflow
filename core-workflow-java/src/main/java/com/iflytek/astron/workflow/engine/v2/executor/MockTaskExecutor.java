@@ -6,6 +6,7 @@ import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowExecutionException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public final class MockTaskExecutor implements NodeTaskExecutor {
     @Override
@@ -14,8 +15,19 @@ public final class MockTaskExecutor implements NodeTaskExecutor {
     }
 
     @Override
-    public Map<String, Object> execute(NodeInvocation invocation) {
+    public Map<String, Object> execute(NodeInvocation invocation) throws InterruptedException {
         Map<String, Object> config = invocation.node().config();
+        long delay = ((Number) config.getOrDefault("delayMs", 0)).longValue();
+        if (delay < 0 || delay > 60000) {
+            throw new IllegalArgumentException("MOCK delayMs must be between 0 and 60000");
+        }
+        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delay);
+        while (System.nanoTime() < until) {
+            if (invocation.cancelled().getAsBoolean()) {
+                throw new WorkflowExecutionException(WorkflowError.NODE_FAILED, "Mock invocation cancelled");
+            }
+            Thread.sleep(Math.min(50, Math.max(1, TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime()))));
+        }
         int failAttempts = ((Number) config.getOrDefault("failAttempts", 0)).intValue();
         if (invocation.attemptNo() <= failAttempts) {
             throw new WorkflowExecutionException(WorkflowError.NODE_FAILED, "Configured mock attempt failure");

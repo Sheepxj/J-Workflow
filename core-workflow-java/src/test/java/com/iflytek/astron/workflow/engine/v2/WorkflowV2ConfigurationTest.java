@@ -3,8 +3,7 @@ package com.iflytek.astron.workflow.engine.v2;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iflytek.astron.workflow.engine.integration.model.ModelServiceClient;
 import com.iflytek.astron.workflow.engine.integration.plugins.PluginServiceClient;
-import com.iflytek.astron.workflow.engine.v2.executor.LlmTaskExecutor;
-import com.iflytek.astron.workflow.engine.v2.executor.PluginTaskExecutor;
+import com.iflytek.astron.workflow.engine.v2.scheduler.WorkflowScheduler;
 import com.iflytek.astron.workflow.engine.v2.facade.WorkflowExecutionFacade;
 import com.iflytek.astron.workflow.engine.v2.facade.WorkflowV2Configuration;
 import com.iflytek.astron.workflow.engine.v2.store.ExecutionStore;
@@ -33,8 +32,7 @@ class WorkflowV2ConfigurationTest {
                 .run(application -> {
                     assertThat(application).hasNotFailed();
                     assertThat(application).hasSingleBean(WorkflowExecutionFacade.class);
-                    assertThat(application).hasSingleBean(LlmTaskExecutor.class);
-                    assertThat(application).hasSingleBean(PluginTaskExecutor.class);
+                    assertThat(application.getBean(WorkflowScheduler.class).registeredNodeTypes()).contains("LLM", "PLUGIN", "MOCK");
                 });
     }
 

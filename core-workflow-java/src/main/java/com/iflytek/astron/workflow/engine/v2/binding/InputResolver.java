@@ -4,6 +4,7 @@ import com.iflytek.astron.workflow.engine.v2.definition.InputBinding;
 import com.iflytek.astron.workflow.engine.v2.definition.JsonValues;
 import com.iflytek.astron.workflow.engine.v2.runtime.ExecutionScope;
 import com.iflytek.astron.workflow.engine.v2.runtime.NodeExecution;
+import com.iflytek.astron.workflow.engine.v2.runtime.InputOrigin;
 import com.iflytek.astron.workflow.engine.v2.runtime.RuntimeStatus.ExecutionStatus;
 import com.iflytek.astron.workflow.engine.v2.runtime.RuntimeStatus.ScopeType;
 import com.iflytek.astron.workflow.engine.v2.runtime.WorkflowError;
@@ -27,6 +28,35 @@ public final class InputResolver {
         return JsonValues.snapshot(result);
     }
 
+    public Map<String, InputOrigin> origins(Map<String, InputBinding> bindings, WorkflowRun run, String scopeId) {
+        Map<String, InputOrigin> origins = new LinkedHashMap<>();
+        bindings.forEach((name, binding) -> {
+            ExecutionScope scope = run.getScopes().get(scopeId);
+            String executionId = null;
+            int version = 0;
+            switch (binding.source()) {
+                case NODE_OUTPUT, NODE_ERROR -> {
+                    scope = nodeScope(binding, run, scope);
+                    executionId = scope.getNodeExecutions().get(binding.nodeId());
+                }
+                case LOOP_STATE -> {
+                    scope = loopScope(run, scopeId, binding.loopId());
+                    version = scope.getCompletedIterations();
+                }
+                case LOOP_OUTPUT -> {
+                    String origin = scope.getLoopOutputSources().get(binding.loopId());
+                    scope = origin == null ? scope : run.getScopes().get(origin);
+                    version = scope.getCompletedIterations();
+                }
+                case RUN_INPUT -> scope = run.getScopes().get(run.getRootScopeId());
+                case LITERAL -> scope = null;
+            }
+            origins.put(name, new InputOrigin(binding.source().name(), executionId,
+                    scope == null ? null : scope.getScopeId(), binding.path(), version));
+        });
+        return Map.copyOf(origins);
+    }
+
     private Object resolve(InputBinding binding, WorkflowRun run, String scopeId) {
         ExecutionScope scope = run.getScopes().get(scopeId);
         Object source = switch (binding.source()) {
@@ -40,15 +70,7 @@ public final class InputResolver {
                 yield scope.getLoopOutputs().get(binding.loopId());
             }
             case NODE_OUTPUT, NODE_ERROR -> {
-                if ("CURRENT_ITERATION".equals(binding.scope()) && !insideIteration(run, scope)) {
-                    throw unavailable("CURRENT_ITERATION used outside an iteration");
-                }
-                if ("PARENT".equals(binding.scope())) {
-                    scope = run.getScopes().get(scope.getParentScopeId());
-                    while (scope != null && (scope.getType() == ScopeType.LOOP || scope.getType() == ScopeType.PARALLEL)) {
-                        scope = run.getScopes().get(scope.getParentScopeId());
-                    }
-                }
+                scope = nodeScope(binding, run, scope);
                 String executionId = scope == null ? null : scope.getNodeExecutions().get(binding.nodeId());
                 NodeExecution execution = executionId == null ? null : run.getExecutions().get(executionId);
                 boolean success = binding.source() == InputBinding.Source.NODE_OUTPUT;
@@ -60,6 +82,19 @@ public final class InputResolver {
             }
         };
         return binding.source() == InputBinding.Source.LITERAL ? source : path(source, binding.path());
+    }
+
+    private ExecutionScope nodeScope(InputBinding binding, WorkflowRun run, ExecutionScope scope) {
+        if ("CURRENT_ITERATION".equals(binding.scope()) && !insideIteration(run, scope)) {
+            throw unavailable("CURRENT_ITERATION used outside an iteration");
+        }
+        if ("PARENT".equals(binding.scope())) {
+            scope = run.getScopes().get(scope.getParentScopeId());
+            while (scope != null && (scope.getType() == ScopeType.LOOP || scope.getType() == ScopeType.PARALLEL)) {
+                scope = run.getScopes().get(scope.getParentScopeId());
+            }
+        }
+        return scope;
     }
 
     private boolean insideIteration(WorkflowRun run, ExecutionScope scope) {

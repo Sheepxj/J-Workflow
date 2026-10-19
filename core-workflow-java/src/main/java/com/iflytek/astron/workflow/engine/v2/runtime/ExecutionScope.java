@@ -19,4 +19,5 @@ public class ExecutionScope {
     private Map<String, Object> localState = Map.of();
     private Map<String, String> nodeExecutions = new HashMap<>();
     private Map<String, Map<String, Object>> loopOutputs = new HashMap<>();
+    private Map<String, String> loopOutputSources = new HashMap<>();
 }

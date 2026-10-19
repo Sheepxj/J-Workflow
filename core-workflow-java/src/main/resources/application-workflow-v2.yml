@@ -1,0 +1,33 @@
+server:
+  port: ${WORKFLOW_PORT:7880}
+
+spring:
+  application:
+    name: j-workflow-v2
+  datasource:
+    url: ${WORKFLOW_JDBC_URL:}
+    username: ${WORKFLOW_JDBC_USERNAME:}
+    password: ${WORKFLOW_JDBC_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  ai:
+    model:
+      chat: none
+      embedding: none
+      image: none
+      moderation: none
+      audio:
+        speech: none
+        transcription: none
+
+workflow:
+  v2:
+    enabled: true
+    store: ${WORKFLOW_STATE_STORE:jdbc}
+    initialize-schema: ${WORKFLOW_INITIALIZE_SCHEMA:false}
+    link-enabled: ${WORKFLOW_LINK_ENABLED:false}
+  services:
+    aitools-url: ${WORKFLOW_LINK_URL:}
+
+logging:
+  file:
+    name: ${WORKFLOW_LOG_FILE:logs/workflow-v2.log}

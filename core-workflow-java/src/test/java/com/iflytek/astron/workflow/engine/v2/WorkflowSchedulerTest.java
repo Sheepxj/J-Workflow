@@ -59,6 +59,19 @@ class WorkflowSchedulerTest {
                 .map(execution -> execution.getInputSnapshot().get("draft")).toList());
         assertTrue(run.getExecutions().values().stream().allMatch(e -> e.getStatus() == ExecutionStatus.SUCCEEDED));
         assertEquals(1, run.getEvents().stream().filter(event -> event.type().equals("RUN_SUCCEEDED")).count());
+        List<NodeExecution> validations = executions(run, "validate");
+        List<NodeExecution> generations = executions(run, "generate");
+        for (int index = 0; index < 3; index++) {
+            assertEquals(generations.get(index).getExecutionId(), validations.get(index).getInputOrigins().get("text").executionId());
+            assertEquals(generations.get(index).getExecutionId(), validations.get(index).getCauseExecutionId());
+            assertEquals(index, generations.get(index).getInputOrigins().get("draft").version());
+        }
+        var exported = executions(run, "end").getFirst().getInputOrigins().get("result");
+        assertEquals(3, exported.version());
+        assertTrue(run.getScopes().get(exported.scopeId()).isClosed());
+        assertTrue(run.getEvents().stream().filter(event -> event.scopeId() != null)
+                .allMatch(event -> event.scopePath().getFirst().equals(run.getRootScopeId())
+                        && event.scopePath().getLast().equals(event.scopeId())));
     }
 
     @Test
