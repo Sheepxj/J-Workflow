@@ -2,6 +2,7 @@ package com.iflytek.astron.workflow.engine.v2.compiler;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.iflytek.astron.workflow.engine.v2.definition.Condition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition;
 import com.iflytek.astron.workflow.engine.v2.definition.EdgeDefinition.EdgeType;
@@ -32,7 +33,7 @@ public final class WorkflowCompiler {
     private final Set<String> executorTypes;
 
     public WorkflowCompiler(ObjectMapper mapper, Set<String> executorTypes) {
-        this.mapper = mapper.copy();
+        this.mapper = mapper.copy().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
         this.executorTypes = Set.copyOf(executorTypes);
     }
 
@@ -123,7 +124,7 @@ public final class WorkflowCompiler {
             validateBindings(loop.outputBindings(), nodes, loopIds);
         }
         for (EdgeDefinition edge : definition.edges()) {
-            validateBoundary(edge, nodes, owners, loops);
+            validateBoundary(edge, owners, loops);
         }
         requireAcyclicWithoutBackEdges(nodes.keySet(), outgoing);
         String startId = starts.getFirst().id();
@@ -138,8 +139,8 @@ public final class WorkflowCompiler {
         return new CompiledWorkflow(definition, hash(definition), startId, nodes, frozen, loops, owners);
     }
 
-    private void validateBoundary(EdgeDefinition edge, Map<String, NodeDefinition> nodes,
-                                  Map<String, String> owners, Map<String, LoopDefinition> loops) {
+    private void validateBoundary(EdgeDefinition edge, Map<String, String> owners,
+                                  Map<String, LoopDefinition> loops) {
         String sourceOwner = owners.get(edge.source());
         String targetOwner = owners.get(edge.target());
         boolean sourceHeader = loops.containsKey(edge.source());
@@ -151,9 +152,10 @@ public final class WorkflowCompiler {
         } else {
             scope(edge.loopId() == null && !"continue".equals(edge.targetPort()), "Undeclared back edge: " + edge.id());
             if (!Objects.equals(sourceOwner, targetOwner)) {
-                boolean enters = targetHeader && "enter".equals(edge.targetPort()) && sourceOwner == null;
-                boolean exits = sourceHeader && "exit".equals(edge.sourcePort()) && targetOwner == null;
-                scope(enters || exits, "Edge crosses loop boundary: " + edge.id());
+                boolean enters = targetHeader && "enter".equals(edge.targetPort());
+                boolean exits = sourceHeader && "exit".equals(edge.sourcePort());
+                scope((sourceOwner == null || exits) && (targetOwner == null || enters),
+                        "Edge crosses loop boundary: " + edge.id());
             } else if (targetHeader) {
                 scope(false, "Loop return must be a declared BACK edge: " + edge.id());
             }
@@ -167,7 +169,8 @@ public final class WorkflowCompiler {
             scope(Objects.equals(sourceOwner, targetOwner) && !targetHeader, "Body edge must enter its loop body");
         }
         if (sourceHeader && "exit".equals(edge.sourcePort())) {
-            scope(targetOwner == null, "Loop exit must leave the region");
+            scope(targetOwner == null || targetHeader && "enter".equals(edge.targetPort())
+                    && !Objects.equals(sourceOwner, targetOwner), "Loop exit must leave the region");
         }
     }
 
