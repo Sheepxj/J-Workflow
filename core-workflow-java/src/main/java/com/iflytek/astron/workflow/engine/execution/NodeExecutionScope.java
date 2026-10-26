@@ -37,9 +37,21 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 
+/**
+ * 单个节点「一次激活」的执行作用域。
+ *
+ * <p>它封装一次节点执行所需的全部上下文（入参快照、变量快照、对话历史、每次物理尝试的状态），
+ * 并以 {@link NodeState} 向节点执行器暴露受控的副作用入口：事件回调、历史读写、输入存在性判断，
+ * 以及可感知的取消/超时状态。
+ *
+ * <p>root 实例对应一次激活并持有真实状态；每次物理尝试（含重试）都会派生一个 child 实例，
+ * 字段共享 root，只额外绑定自己的 attempt。
+ */
 @Slf4j
 public final class NodeExecutionScope {
+    // 所属运行的上下文，同时是本类所有状态变更的锁对象
     private final WorkflowRunContext run;
+    // 节点定义副本，避免与图定义或其他执行互相污染
     private final Node node;
     @Getter
     private final String executionId;
@@ -48,11 +60,14 @@ public final class NodeExecutionScope {
     private final int activationNo;
     private final Map<String, Object> inputs;
     private final Map<String, NodeActivation.InputOrigin> inputOrigins;
+    // 激活时冻结的变量池与历史快照，保证一次执行内部看到一致的数据视图
     private final Map<String, Map<String, Object>> variables;
     private final List<ChatItem> initialHistory;
     private final Clock clock;
+    // root 持有真实状态；child 通过这两个字段回指 root 与本次尝试
     private final NodeExecutionScope root;
     private final AttemptState attempt;
+    // 一次激活可能经历多次物理尝试（重试），按发生顺序记录
     private final List<AttemptState> attempts = new ArrayList<>();
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private volatile Status status = Status.READY;
@@ -60,6 +75,7 @@ public final class NodeExecutionScope {
     private NodeRunResult result;
     private List<ChatItem> history;
 
+    // root 作用域：由 NodeExecutionBridge.prepare 在一次激活时创建
     NodeExecutionScope(WorkflowRunContext run, Node node, String activationId, int activationNo,
                        Map<String, Object> inputs, Map<String, NodeActivation.InputOrigin> inputOrigins,
                        Map<String, Map<String, Object>> variables, Clock clock) {
@@ -77,6 +93,7 @@ public final class NodeExecutionScope {
         this.attempt = null;
     }
 
+    // child 作用域：每次物理尝试派生一个，自身状态全部委托给 root
     private NodeExecutionScope(NodeExecutionScope root, Node node, AttemptState attempt) {
         this.run = root.run;
         this.node = node;
@@ -96,25 +113,39 @@ public final class NodeExecutionScope {
         return JsonSnapshot.mutable(inputs);
     }
 
+    /**
+     * 是否还允许产生副作用：run 未超时、未取消、本激活处于运行中，
+     * 且当前物理尝试仍在自身的超时窗口内。
+     */
     public boolean isActive() {
         return run.executionAllowed() && !root.cancelled.get() && root.status == Status.RUNNING && (attempt == null || attempt.status == AttemptStatus.RUNNING
                 && clock.millis() < attempt.deadline);
     }
 
+    /**
+     * 入参是否「真的有值」。只看 key 存在不够，上游节点没产出该字段时也应视为缺失。
+     */
     public boolean inputPresent(String name) {
         NodeActivation.InputOrigin origin = inputOrigins.get(name);
         return origin == null ? inputs.containsKey(name) : origin.present();
     }
 
+    /**
+     * 发起一次物理尝试并同步等待结果：分配 attempt、按配置施加单次超时、执行节点；
+     * 执行异常时交由 failure 回调转换成业务结果（例如走失败分支）。
+     */
     public NodeRunResult invoke(NodeState state, RetryConfig retry, Invocation invocation,
                                 BiFunction<NodeState, NodeCustomException, NodeRunResult> failure) {
         AttemptState current;
         NodeExecutionScope child;
+        // 先补投上一次尝试积攒的终态事件，保证事件顺序与状态变化一致
         root.publishTerminals();
         synchronized (run) {
+            // 已取消或已超时：不再执行，直接返回中断结果
             if (!isActive()) {
                 return interrupted();
             }
+            // 本次尝试的截止时间由节点重试配置决定（未配置则不设限）
             long startedAt = clock.millis();
             long timeout = retry != null && retry.timeOutEnabled() ? retry.toMillis() : Long.MAX_VALUE;
             long deadline = timeout > Long.MAX_VALUE - startedAt ? Long.MAX_VALUE : startedAt + timeout;
@@ -124,12 +155,15 @@ public final class NodeExecutionScope {
             child = new NodeExecutionScope(root, copyNode(node), current);
             child.node.getExecutedCount().set(current.attemptNo);
         }
+        // 每次尝试都基于激活时冻结的变量快照新建私有变量池
         VariablePool privatePool = pool();
+        // 回调包一层门控：本尝试失效后，节点产生的消息与历史写入都会被静默丢弃
         WorkflowMsgCallback guarded = run.callback().guarded(child::gate, child::deferTerminal, child::isActive);
         NodeState call = new NodeState(child.node, privatePool, guarded, child);
         NodeRunResult returned;
         boolean timedOut = false;
         try {
+            // 配了超时就限时执行，否则直接同步调用
             if (retry != null && retry.timeOutEnabled()) {
                 returned = AsyncUtil.callWithTimeLimit(retry.toMillis(), TimeUnit.MILLISECONDS,
                         () -> child.withContext(call, invocation));
@@ -138,12 +172,14 @@ public final class NodeExecutionScope {
             }
             returned = JsonSnapshot.result(Objects.requireNonNull(returned, "Node executor returned no result"));
             synchronized (run) {
+                // executor 正常返回也可能已越过时限，这里补判一次
                 if (clock.millis() >= current.deadline) {
                     throw new TimeoutException("Node attempt deadline exceeded");
                 }
                 current.accepting = false;
             }
         } catch (Exception error) {
+            // 超时与中断统一按超时处理，其余异常保留原始业务错误码
             timedOut = error instanceof TimeoutException || error instanceof InterruptedException;
             synchronized (run) {
                 current.accepting = false;
@@ -156,12 +192,14 @@ public final class NodeExecutionScope {
             NodeCustomException business = timedOut ? new NodeCustomException(ErrorCode.TIMEOUT_ERROR)
                     : cause instanceof NodeCustomException custom ? custom
                     : new NodeCustomException(ErrorCode.NODE_RUN_ERROR, cause.getMessage());
+            // 失败处理阶段用单独的门控，避免上一次尝试的迟到事件串台
             WorkflowMsgCallback control = run.callback().guarded(action -> controlGate(current, action),
                     action -> deferControlTerminal(current, action),
                     () -> controlActive(current));
             returned = failure.apply(new NodeState(copyNode(node), pool(), control, child), business);
         }
         synchronized (run) {
+            // 执行期间被取消：结果作废，按中断返回
             if (!run.executionAllowed() || root.cancelled.get() || root.status != Status.RUNNING || current.status == AttemptStatus.CANCELLED) {
                 return interrupted();
             }
@@ -181,6 +219,7 @@ public final class NodeExecutionScope {
         }
     }
 
+    // ===== 对话历史读写：供 LLM 节点维护多轮上下文，写入前校验 chatId/nodeId 归属 =====
     public void newChat(String chatId, String nodeId) {
         mutate(() -> {
             requireHistoryIdentity(chatId, nodeId);
@@ -225,6 +264,7 @@ public final class NodeExecutionScope {
         });
     }
 
+    // 交给节点执行器的 NodeState：绑定本作用域，回调已带门控
     NodeState state() {
         return new NodeState(node, pool(), run.callback().guarded(this::gate, this::isActive), this);
     }
@@ -237,11 +277,13 @@ public final class NodeExecutionScope {
         return root.status;
     }
 
+    // READY -> RUNNING，由 NodeExecutionBridge 在 claim 成功后调用
     void start() {
         status = Status.RUNNING;
         node.setStatus(NodeStatusEnum.RUNNING);
     }
 
+    // 取消本次激活：关闭所有尝试的副作用通道，并把在跑的尝试标记为已取消
     void cancel() {
         if (status != Status.READY && status != Status.RUNNING) {
             return;
@@ -259,6 +301,7 @@ public final class NodeExecutionScope {
         }
     }
 
+    // 投递本尝试积攒的终态事件（节点完成/失败等）；单个事件投递失败不影响主流程
     void publishTerminals() {
         List<Runnable> terminal;
         synchronized (run) {
@@ -280,6 +323,7 @@ public final class NodeExecutionScope {
         }
     }
 
+    // 记录最终结果并收敛激活状态
     NodeRunResult complete(NodeRunResult returned) {
         result = JsonSnapshot.result(returned);
         result.setInputs(inputs);
@@ -288,11 +332,13 @@ public final class NodeExecutionScope {
         return result;
     }
 
+    // 收尾：把结果/历史写回 run（决定是否更新变量池），再投递终态事件
     void commit(NodeRunResult returned) {
         run.complete(root, returned, history);
         publishTerminals();
     }
 
+    // 对外的不可变视图
     NodeActivation snapshot() {
         return new NodeActivation(run.getRunId(), executionId, activationId, node.getId(), activationNo, root.status,
                 inputs, inputOrigins, result, attempts.stream().map(AttemptState::snapshot).toList());
@@ -312,6 +358,7 @@ public final class NodeExecutionScope {
         return pool;
     }
 
+    // 绑定 ThreadLocal 的 EngineContext（flowId/chatId/sid/幂等键），并统计在途物理调用数
     private NodeRunResult withContext(NodeState state, Invocation invocation) throws Exception {
         if (!isActive()) {
             return interrupted();
@@ -338,6 +385,7 @@ public final class NodeExecutionScope {
         }
     }
 
+    // 执行器直接抛异常时的兜底：把当前尝试记为 FAILED，并返回中断态结果
     NodeRunResult failedInvocation(NodeCustomException error) {
         synchronized (run) {
             if (!attempts.isEmpty()) {
@@ -358,6 +406,7 @@ public final class NodeExecutionScope {
         }
     }
 
+    // ===== 副作用门控：失效的尝试只能静默丢弃；终态事件先入队，提交后再统一投递 =====
     private void gate(Runnable action) {
         if (isActive() && (attempt == null || attempt.accepting)) {
             action.run();
@@ -411,6 +460,7 @@ public final class NodeExecutionScope {
         NodeRunResult call(NodeState state) throws Exception;
     }
 
+    // 一次物理尝试（重试的第 N 次）的状态与事件缓冲
     private static final class AttemptState {
         private final String attemptId = UUID.randomUUID().toString();
         private final int attemptNo;
