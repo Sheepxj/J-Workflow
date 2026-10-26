@@ -1,0 +1,101 @@
+{
+  "flowId": "p0-interrupt",
+  "uuid": "p0-chat-interrupt",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::work",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::work"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0,
+          "failureRate": 1
+        },
+        "outputs": [],
+        "retryConfig": {
+          "shouldRetry": false,
+          "maxRetries": 0,
+          "timeout": 0,
+          "errorStrategy": 0,
+          "customOutput": {
+            "output": "fallback"
+          },
+          "retryStrategy": 0,
+          "retryInterval": 0
+        }
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "mock::work",
+                  "name": "output"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "mock::work",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    }
+  ]
+}

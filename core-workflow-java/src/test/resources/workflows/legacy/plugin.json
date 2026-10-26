@@ -1,0 +1,90 @@
+{
+  "flowId": "p0-plugin",
+  "uuid": "p0-chat-plugin",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "plugin::tool",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "plugin",
+          "aliasName": "plugin::tool"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "toolId": "p0-tool",
+          "operationId": "invoke"
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "plugin::tool",
+                  "name": "output"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "plugin::tool",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "plugin::tool",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    }
+  ]
+}

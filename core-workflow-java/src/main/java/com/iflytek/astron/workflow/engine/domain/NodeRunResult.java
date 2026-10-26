@@ -63,4 +63,6 @@ public class NodeRunResult {
      * Status of the node execution.
      */
     private NodeExecStatusEnum status;
+
+    private String selectedHandle;
 }

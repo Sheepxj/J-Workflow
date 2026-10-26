@@ -8,18 +8,16 @@ import com.iflytek.astron.workflow.engine.constants.NodeExecStatusEnum;
 import com.iflytek.astron.workflow.engine.constants.NodeTypeEnum;
 import com.iflytek.astron.workflow.engine.domain.NodeRunResult;
 import com.iflytek.astron.workflow.engine.domain.NodeState;
-import com.iflytek.astron.workflow.engine.domain.chain.InputItem;
 import com.iflytek.astron.workflow.engine.domain.chain.Node;
 import com.iflytek.astron.workflow.engine.domain.chain.RetryConfig;
-import com.iflytek.astron.workflow.engine.domain.chain.Value;
 import com.iflytek.astron.workflow.engine.node.callback.WorkflowMsgCallback;
 import com.iflytek.astron.workflow.engine.util.AsyncUtil;
 import com.iflytek.astron.workflow.engine.util.FlowUtil;
+import com.iflytek.astron.workflow.engine.util.JsonSnapshot;
 import com.iflytek.astron.workflow.exception.ErrorCode;
 import com.iflytek.astron.workflow.exception.NodeCustomException;
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -40,7 +38,8 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
         RetryConfig retryConfig = node.getData().getRetryConfig();
         if (retryConfig == null) {
             // 没有重试相关配置，直接执行（无超时控制）
-            return this.doExecute(nodeState);
+            return nodeState.execution() == null ? this.doExecute(nodeState)
+                    : nodeState.execution().invoke(nodeState, null, this::doExecute, this::executionFailure);
         }
 
         // 有配置就使用超时控制（无论是否重试）
@@ -57,12 +56,19 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
                 return res;
             }
 
+            if (nodeState.execution() != null && !nodeState.execution().isActive()) {
+                return res;
+            }
+
             if (executeTime > retryConfig.getMaxRetries()) {
                 // 超过重试次数
                 return res;
             }
             // 退避等待
             this.handleRetryWait(retryConfig, executeTime);
+            if (nodeState.execution() != null && !nodeState.execution().isActive()) {
+                return res;
+            }
             executeTime = node.getExecutedCount().addAndGet(1);
         }
     }
@@ -105,6 +111,9 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
     }
 
     protected NodeRunResult doExecuteWithTimeout(NodeState nodeState, RetryConfig retryConfig) {
+        if (nodeState.execution() != null) {
+            return nodeState.execution().invoke(nodeState, retryConfig, this::doExecute, this::executionFailure);
+        }
         if (retryConfig.timeOutEnabled()) {
             // 设置了超时时间的场景
             try {
@@ -139,7 +148,7 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
         callback.onNodeStart(0, node.getId(), node.getData().getNodeMeta().getAliasName());
 
         // Resolve inputs
-        Map<String, Object> resolvedInputs = node.getNodeType() == NodeTypeEnum.START ? variablePool.get(node.getId()) : resolveInputs(node, variablePool);
+        Map<String, Object> resolvedInputs = nodeStage.execution() == null ? prepareInputs(nodeStage) : nodeStage.execution().inputs();
         try {
             // Execute node
             if (log.isDebugEnabled()) {
@@ -183,6 +192,12 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
      */
     protected abstract NodeRunResult executeNode(NodeState nodeState, Map<String, Object> inputs) throws Exception;
 
+    @Override
+    public Map<String, Object> prepareInputs(NodeState state) {
+        return state.node().getNodeType() == NodeTypeEnum.START ? state.variablePool().get(state.node().getId())
+                : resolveInputs(state.node(), state.variablePool());
+    }
+
     /**
      * Resolve all inputs for this node
      * Handles both literal values and variable references
@@ -192,52 +207,7 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
      * @return map of resolved input values
      */
     protected Map<String, Object> resolveInputs(Node node, VariablePool variablePool) {
-        Map<String, Object> resolvedInputs = new HashMap<>();
-
-        if (node.getData().getInputs() == null || node.getData().getInputs().isEmpty()) {
-            log.debug("No inputs defined for node {}", node.getId());
-            return resolvedInputs;
-        }
-
-        for (InputItem input : node.getData().getInputs()) {
-            String inputName = input.getName();
-
-            if (input.getSchema() == null || input.getSchema().getValue() == null) {
-                log.warn("Input '{}' has no schema or value", inputName);
-                continue;
-            }
-
-            Value value = input.getSchema().getValue();
-
-            if (value.isReference()) {
-                // 引用其他节点的输出作为这个节点的输入
-                if (value.getContent() instanceof java.util.Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, String> refMap = (Map<String, String>) value.getContent();
-                    String refNodeId = refMap.get("nodeId");
-                    String refName = refMap.get("name");
-
-                    if (refNodeId != null && refName != null) {
-                        // 说明 refName 可以是形如 xxx.yyy 的格式，其中 xxx 为 node的输出，yyy 为输出对象的某一个属性
-                        Object refValue = variablePool.get(refNodeId, refName);
-                        resolvedInputs.put(inputName, refValue);
-                        if (log.isDebugEnabled()) {
-                            log.debug("Resolved input '{}' from reference {}.{} = {}", inputName, refNodeId, refName, refValue);
-                        }
-                    }
-                } else {
-                    log.warn("Reference content is not a Map for input '{}'", inputName);
-                }
-            } else {
-                // 直接将value作为输入参数
-                resolvedInputs.put(inputName, value.getContent());
-                if (log.isDebugEnabled()) {
-                    log.debug("Resolved input '{}' from literal = {}", inputName, value.getContent());
-                }
-            }
-        }
-
-        return resolvedInputs;
+        return NodeInputResolver.resolve(node, variablePool);
     }
 
     /**
@@ -277,11 +247,12 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
     protected void successResponse(NodeState nodeState, NodeRunResult result) {
         Node node = nodeState.node();
         WorkflowMsgCallback callback = nodeState.callback();
+        NodeRunResult response = presentation(nodeState, result);
         switch (nodeState.node().getNodeType()) {
             case START ->
-                    callback.onStartNodeExecuted(node.getId(), node.getData().getNodeMeta().getAliasName(), result);
-            case END -> callback.onEndNodeExecuted(node.getId(), node.getData().getNodeMeta().getAliasName(), result);
-            default -> callback.onNodeEnd(node.getId(), node.getData().getNodeMeta().getAliasName(), result);
+                    callback.onStartNodeExecuted(node.getId(), node.getData().getNodeMeta().getAliasName(), response);
+            case END -> callback.onEndNodeExecuted(node.getId(), node.getData().getNodeMeta().getAliasName(), response);
+            default -> callback.onNodeEnd(node.getId(), node.getData().getNodeMeta().getAliasName(), response);
         }
     }
 
@@ -318,14 +289,14 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
             result.setError(e);
             result.setErrorOutputs(customOutput);
             result.setStatus(NodeExecStatusEnum.ERR_CODE_MSG);
-            callback.onNodeEnd(node.getId(), node.getData().getNodeMeta().getAliasName(), result);
+            callback.onNodeEnd(node.getId(), node.getData().getNodeMeta().getAliasName(), presentation(nodeState, result));
             return result;
         } else if (errorStrategy == ErrorStrategyEnum.ERR_CONDITION) {
             // 错误分支
             result.setError(e);
             result.setErrorOutputs(customOutput);
             result.setStatus(NodeExecStatusEnum.ERR_FAIL_CONDITION);
-            callback.onNodeEnd(node.getId(), node.getData().getNodeMeta().getAliasName(), result);
+            callback.onNodeEnd(node.getId(), node.getData().getNodeMeta().getAliasName(), presentation(nodeState, result));
             return result;
         } else {
             // 异常中断流程
@@ -335,5 +306,15 @@ public abstract class AbstractNodeExecutor implements NodeExecutor {
             callback.onNodeInterrupt(FlowUtil.genInterruptEventId(), customOutput, node.getId(), node.getData().getNodeMeta().getAliasName(), e.getCode(), "interrupt", false);
             return result;
         }
+    }
+
+    private NodeRunResult presentation(NodeState state, NodeRunResult result) {
+        return state.execution() == null ? result : JsonSnapshot.result(result);
+    }
+
+    private NodeRunResult executionFailure(NodeState state, NodeCustomException error) {
+        NodeRunResult result = new NodeRunResult();
+        result.setError(error);
+        return errorResponse(state, result);
     }
 }

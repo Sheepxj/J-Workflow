@@ -4,9 +4,14 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.iflytek.astron.workflow.engine.constants.MsgTypeEnum;
+import com.iflytek.astron.workflow.engine.context.EngineContextHolder;
+import com.iflytek.astron.workflow.engine.execution.NodeExecutionScope;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -77,6 +82,10 @@ public class LlmChatHistory {
     }
 
     public static void newChat(String chatId, String nodeId) {
+        if (scope() != null) {
+            scope().newChat(chatId, nodeId);
+            return;
+        }
         String key = generateKey(chatId, nodeId);
         ConcurrentLinkedQueue<ChatItem> queue = chatHistoryCache.getUnchecked(key);
         ChatItem newItem = new ChatItem(chatId, nodeId);
@@ -92,6 +101,10 @@ public class LlmChatHistory {
      * @param content 消息内容
      */
     public static void addMessage(String chatId, String nodeId, MsgTypeEnum role, String content) {
+        if (scope() != null) {
+            scope().addMessage(chatId, nodeId, role, content);
+            return;
+        }
         String key = generateKey(chatId, nodeId);
         ChatMessage message = new ChatMessage(role, content);
 
@@ -141,6 +154,9 @@ public class LlmChatHistory {
      * @return 聊天历史记录列表
      */
     public static List<ChatItem> getHistory(String chatId, String nodeId) {
+        if (scope() != null) {
+            return scope().getHistory(chatId, nodeId, Integer.MAX_VALUE);
+        }
         String key = generateKey(chatId, nodeId);
         return new ArrayList<>(chatHistoryCache.getUnchecked(key));
     }
@@ -154,6 +170,9 @@ public class LlmChatHistory {
      * @return 指定条数的聊天历史记录列表
      */
     public static List<ChatItem> getHistory(String chatId, String nodeId, int count) {
+        if (scope() != null) {
+            return scope().getHistory(chatId, nodeId, count);
+        }
         String key = generateKey(chatId, nodeId);
         ConcurrentLinkedQueue<ChatItem> queue = chatHistoryCache.getUnchecked(key);
 
@@ -171,6 +190,10 @@ public class LlmChatHistory {
      * @param nodeId 节点ID
      */
     public static void clearHistory(String chatId, String nodeId) {
+        if (scope() != null) {
+            scope().clearHistory(chatId, nodeId);
+            return;
+        }
         String key = generateKey(chatId, nodeId);
         chatHistoryCache.invalidate(key);
     }
@@ -191,5 +214,42 @@ public class LlmChatHistory {
      */
     public static LoadingCache<String, ConcurrentLinkedQueue<ChatItem>> getCache() {
         return chatHistoryCache;
+    }
+
+    public static Map<String, List<ChatItem>> snapshot(String chatId) {
+        Map<String, List<ChatItem>> histories = new LinkedHashMap<>();
+        chatHistoryCache.asMap().values().forEach(queue -> {
+            ChatItem first = queue.peek();
+            if (first != null && first.chatId().equals(chatId)) {
+                histories.put(first.nodeId(), copyHistory(new ArrayList<>(queue)));
+            }
+        });
+        return histories;
+    }
+
+    public static void restore(String chatId, String nodeId, List<ChatItem> history) {
+        List<ChatItem> copied = copyHistory(history);
+        if (copied.stream().anyMatch(item -> !chatId.equals(item.chatId()) || !nodeId.equals(item.nodeId()))) {
+            throw new IllegalArgumentException("History identity differs from restore target");
+        }
+        ConcurrentLinkedQueue<ChatItem> restored = createChatHistoryQueue();
+        copied.subList(Math.max(0, copied.size() - MAX_HISTORY_LENGTH), copied.size()).forEach(restored::add);
+        chatHistoryCache.put(generateKey(chatId, nodeId), restored);
+    }
+
+    public static List<ChatItem> copyHistory(List<ChatItem> history) {
+        return new ArrayList<>(history.stream().map(item -> new ChatItem(item.chatId(), item.nodeId(),
+                new ArrayList<>(item.userInputs()), new ArrayList<>(item.llmThinking()),
+                new ArrayList<>(item.llmResponses()))).toList());
+    }
+
+    public static Map<String, List<ChatItem>> copyHistories(Map<String, List<ChatItem>> histories) {
+        Map<String, List<ChatItem>> snapshot = new LinkedHashMap<>();
+        histories.forEach((nodeId, history) -> snapshot.put(nodeId, copyHistory(history)));
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    private static NodeExecutionScope scope() {
+        return EngineContextHolder.get() == null ? null : EngineContextHolder.get().getNodeExecution();
     }
 }

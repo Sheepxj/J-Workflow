@@ -2,6 +2,7 @@ package com.iflytek.astron.workflow.engine.context;
 
 import com.alibaba.ttl.TransmittableThreadLocal;
 import com.iflytek.astron.workflow.engine.node.callback.WorkflowMsgCallback;
+import com.iflytek.astron.workflow.engine.execution.NodeExecutionScope;
 import com.iflytek.astron.workflow.engine.util.FlowUtil;
 import lombok.Data;
 
@@ -48,5 +49,7 @@ public class EngineContextHolder {
         private String sid;
 
         private String idempotencyKey;
+
+        private NodeExecutionScope nodeExecution;
     }
 }

@@ -1,0 +1,94 @@
+{
+  "flowId": "p0-knowledge",
+  "uuid": "p0-chat-knowledge",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "knowledge-base::search",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "knowledge-base",
+          "aliasName": "knowledge-base::search"
+        },
+        "inputs": [
+          {
+            "id": "input-query",
+            "name": "query",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "repoId": [
+            "repo-1"
+          ],
+          "topN": 3,
+          "score": 0.5,
+          "maxContextChars": 1000
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "knowledge-base::search",
+                  "name": "context"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "knowledge-base::search",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "knowledge-base::search",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    }
+  ]
+}

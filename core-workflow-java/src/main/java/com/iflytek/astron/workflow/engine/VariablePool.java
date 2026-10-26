@@ -4,12 +4,16 @@ import cn.hutool.core.util.ClassUtil;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.iflytek.astron.workflow.engine.util.JsonSnapshot;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Collections;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -39,7 +43,7 @@ public class VariablePool {
      * @param outputName output name (e.g., "user_input")
      * @param value      actual value
      */
-    public void set(String nodeId, String outputName, Object value) {
+    public synchronized void set(String nodeId, String outputName, Object value) {
         // 基本数据类型、Number、String格式，直接存储； 非基本数据类型，如列表、Map、对象，则转换为JsonObject，JsonArray的方式进行保存
         // 以JsonArray, JsonObject的方式持有变量；方便后续的变量解析
         if (ClassUtil.isPrimitiveWrapper(value.getClass()) || value instanceof Number || value instanceof String
@@ -61,12 +65,12 @@ public class VariablePool {
      * @param outputName output name
      * @return variable value, or null if not found
      */
-    public Object get(String nodeId, String outputName) {
+    public synchronized Object get(String nodeId, String outputName) {
         Map target = variables.getOrDefault(nodeId, Map.of());
         return getVal(target, outputName);
     }
 
-    public Map<String, Object> get(String nodeId) {
+    public synchronized Map<String, Object> get(String nodeId) {
         return variables.getOrDefault(nodeId, Map.of());
     }
 
@@ -109,7 +113,57 @@ public class VariablePool {
     /**
      * Clear all variables (used between workflow executions)
      */
-    public void clear() {
+    public synchronized void clear() {
         variables.clear();
+    }
+
+    public synchronized Map<String, Map<String, Object>> snapshot() {
+        Map<String, Map<String, Object>> snapshot = new LinkedHashMap<>();
+        variables.forEach((nodeId, outputs) -> snapshot.put(nodeId, JsonSnapshot.copy(outputs)));
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    public synchronized void restore(Map<String, ? extends Map<String, Object>> snapshot) {
+        Map<String, Map<String, Object>> restored = new LinkedHashMap<>();
+        Objects.requireNonNull(snapshot).forEach((nodeId, outputs) -> restored.put(
+                Objects.requireNonNull(nodeId), JsonSnapshot.mutable(Objects.requireNonNull(outputs))));
+        variables.clear();
+        variables.putAll(restored);
+    }
+
+    public synchronized void replaceNodeOutputs(String nodeId, Map<String, Object> outputs) {
+        variables.put(Objects.requireNonNull(nodeId), JsonSnapshot.mutable(Objects.requireNonNull(outputs)));
+    }
+
+    public synchronized boolean contains(String nodeId, String outputName) {
+        return nodeId != null && containsValue(variables.get(nodeId), outputName);
+    }
+
+    private boolean containsValue(Map<?, ?> values, String path) {
+        if (values == null || path == null) {
+            return false;
+        }
+        int dot = path.indexOf('.');
+        if (dot < 0) {
+            return values.containsKey(path);
+        }
+        String key = path.substring(0, dot);
+        Object nested;
+        int bracket = key.indexOf('[');
+        if (bracket > 0 && key.endsWith("]")) {
+            Object list = values.get(key.substring(0, bracket));
+            try {
+                int index = Integer.parseInt(key.substring(bracket + 1, key.length() - 1));
+                if (!(list instanceof List<?> items) || index < 0 || index >= items.size()) {
+                    return false;
+                }
+                nested = items.get(index);
+            } catch (NumberFormatException invalid) {
+                return false;
+            }
+        } else {
+            nested = values.get(key);
+        }
+        return nested instanceof Map<?, ?> map && containsValue(map, path.substring(dot + 1));
     }
 }

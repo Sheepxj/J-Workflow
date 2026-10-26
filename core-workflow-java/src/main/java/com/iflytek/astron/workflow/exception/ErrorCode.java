@@ -14,6 +14,13 @@ public enum ErrorCode {
     MISSING_DEPENDENCY(1004, "Missing dependency"),
     TIMEOUT_ERROR(1005, "Execution timeout"),
     INTERRUPTED_ERROR(1006, "Execution interrupted"),
+    INVALID_WORKFLOW_GRAPH(1101, "Invalid workflow graph"),
+    UNSUPPORTED_WORKFLOW_GRAPH(1102, "Unsupported workflow graph"),
+    WORKFLOW_ROUTING_ERROR(1103, "Workflow routing error"),
+    WORKFLOW_BUDGET_EXCEEDED(1104, "Workflow execution budget exceeded"),
+    WORKFLOW_CONTROL_FLOW_STALLED(1105, "Workflow control flow stalled"),
+    CONDITION_TYPE_ERROR(1106, "Condition operand type mismatch"),
+    WORKFLOW_INPUT_UNAVAILABLE(1107, "Workflow input unavailable"),
 
     // Parameter errors
     PARAM_ERROR(460, "Parameter validation error"),

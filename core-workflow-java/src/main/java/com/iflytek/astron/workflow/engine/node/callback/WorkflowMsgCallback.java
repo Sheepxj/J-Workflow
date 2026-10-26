@@ -20,6 +20,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 @Slf4j
 public class WorkflowMsgCallback implements StreamCallback {
@@ -32,6 +34,85 @@ public class WorkflowMsgCallback implements StreamCallback {
     private final AtomicBoolean consumerRunning = new AtomicBoolean();
     private final CompletableFuture<Void> consumerStopped = new CompletableFuture<>();
     private final Future<?> consumerTask;
+    private final ThreadLocal<BooleanSupplier> producerGuard = new ThreadLocal<>();
+
+    private WorkflowMsgCallback() {
+        chatCallBacks = null;
+        clientCallback = null;
+        streamQueue = null;
+        consumerTask = null;
+    }
+
+    public WorkflowMsgCallback guarded(Consumer<Runnable> gate, BooleanSupplier active) {
+        return guarded(gate, gate, active);
+    }
+
+    public WorkflowMsgCallback guarded(Consumer<Runnable> gate, Consumer<Runnable> terminalGate, BooleanSupplier active) {
+        WorkflowMsgCallback target = this;
+        return new WorkflowMsgCallback() {
+            @Override
+            public void onWorkflowStart() {
+            }
+
+            @Override
+            public void onWorkflowEnd(NodeRunResult message) {
+            }
+
+            @Override
+            public void onNodeStart(int code, String nodeId, String aliasName) {
+                gate.accept(() -> target.produce(active, () -> target.onNodeStart(code, nodeId, aliasName)));
+            }
+
+            @Override
+            public void onNodeProcess(int code, String nodeId, String aliasName, String message, String reasoningContent) {
+                gate.accept(() -> target.produce(active, () -> target.onNodeProcess(code, nodeId, aliasName, message, reasoningContent)));
+            }
+
+            @Override
+            public void onNodeInterrupt(String eventId, Map<String, Object> value, String nodeId, String aliasName,
+                                        int code, String finishReason, boolean needReply) {
+                terminalGate.accept(() -> target.onNodeInterrupt(eventId, value, nodeId, aliasName, code, finishReason, needReply));
+            }
+
+            @Override
+            public void onNodeEnd(String nodeId, String aliasName, NodeRunResult message) {
+                terminalGate.accept(() -> target.onNodeEnd(nodeId, aliasName, message));
+            }
+
+            @Override
+            public void onStartNodeExecuted(String nodeId, String aliasName, NodeRunResult message) {
+                terminalGate.accept(() -> target.onStartNodeExecuted(nodeId, aliasName, message));
+            }
+
+            @Override
+            public void onEndNodeExecuted(String nodeId, String aliasName, NodeRunResult message) {
+                terminalGate.accept(() -> target.onEndNodeExecuted(nodeId, aliasName, message));
+            }
+
+            @Override
+            public void callback(String eventType, Object data) {
+                gate.accept(() -> target.produce(active, () -> target.callback(eventType, data)));
+            }
+
+            @Override
+            public void finished() {
+            }
+
+            @Override
+            public void abort() {
+            }
+
+            @Override
+            public boolean isActive() {
+                return active.getAsBoolean() && target.isActive();
+            }
+
+            @Override
+            public boolean awaitTermination(long timeout, TimeUnit unit) {
+                return !active.getAsBoolean();
+            }
+        };
+    }
 
     public WorkflowMsgCallback(String sid,
                                StreamCallback clientCallback,
@@ -144,7 +225,22 @@ public class WorkflowMsgCallback implements StreamCallback {
     }
 
     private boolean canProduce() {
-        return !finishing.get() && !aborted.get() && clientCallback.isActive();
+        BooleanSupplier guard = producerGuard.get();
+        return !finishing.get() && !aborted.get() && clientCallback.isActive() && (guard == null || guard.getAsBoolean());
+    }
+
+    private void produce(BooleanSupplier active, Runnable action) {
+        BooleanSupplier previous = producerGuard.get();
+        producerGuard.set(active);
+        try {
+            action.run();
+        } finally {
+            if (previous == null) {
+                producerGuard.remove();
+            } else {
+                producerGuard.set(previous);
+            }
+        }
     }
 
     private void consumeStream() {

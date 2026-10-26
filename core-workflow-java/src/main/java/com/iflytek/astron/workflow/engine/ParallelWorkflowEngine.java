@@ -269,6 +269,9 @@ public class ParallelWorkflowEngine implements DisposableBean {
             if (node.getNodeType() == null || nodeExecutors.get(node.getNodeType()) == null) {
                 throw new IllegalStateException("Invalid workflow DSL: executor not found");
             }
+            if (node.getNodeType() == NodeTypeEnum.IF_ELSE) {
+                throw new IllegalStateException("IF_ELSE requires the explicit WorkflowGraphExecutor entry");
+            }
         }
 
         // 环路检测

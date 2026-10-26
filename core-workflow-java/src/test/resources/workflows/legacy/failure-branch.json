@@ -1,0 +1,168 @@
+{
+  "flowId": "p0-failure-branch",
+  "uuid": "p0-chat-failure-branch",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::work",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::work"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0,
+          "failureRate": 1
+        },
+        "outputs": [],
+        "retryConfig": {
+          "shouldRetry": false,
+          "maxRetries": 0,
+          "timeout": 0,
+          "errorStrategy": 2,
+          "customOutput": {
+            "output": "fallback"
+          },
+          "retryStrategy": 0,
+          "retryInterval": 0
+        }
+      }
+    },
+    {
+      "id": "mock::normal",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::normal"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "normal"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::handler",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::handler"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "recovered"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "mock::handler",
+                  "name": "output"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "mock::work",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "mock::normal",
+      "sourceHandle": "normal_one_of"
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "mock::handler",
+      "sourceHandle": "intent_chain|fail_one_of"
+    },
+    {
+      "sourceNodeId": "mock::normal",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::handler",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    }
+  ]
+}

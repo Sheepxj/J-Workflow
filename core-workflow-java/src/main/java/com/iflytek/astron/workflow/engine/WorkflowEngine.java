@@ -144,6 +144,9 @@ public class WorkflowEngine {
             if (executor == null) {
                 throw new IllegalStateException("Invalid workflow DSL: no executor found for node type: " + nodeType);
             }
+            if (nodeType == NodeTypeEnum.IF_ELSE) {
+                throw new IllegalStateException("IF_ELSE requires the explicit WorkflowGraphExecutor entry");
+            }
         }
 
         // 环路检测 (Loop Detection)

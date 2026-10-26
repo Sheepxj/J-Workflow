@@ -1,0 +1,183 @@
+{
+  "flowId": "p0-branch-cycle",
+  "uuid": "p0-chat-branch-cycle",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "spark-llm::generate",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "spark-llm",
+          "aliasName": "spark-llm::generate"
+        },
+        "inputs": [
+          {
+            "id": "input-text",
+            "name": "text",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "modelId": 1,
+          "domain": "test-model",
+          "template": "Rewrite {{text}}",
+          "systemTemplate": "Review {{text}}",
+          "enableChatHistoryV2": {
+            "isEnabled": true,
+            "rounds": 2
+          }
+        },
+        "outputs": [
+          {
+            "id": "out-answer",
+            "name": "answer",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "id": "out-reason",
+            "name": "reason",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "if-else::check",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "if-else",
+          "aliasName": "if-else::check"
+        },
+        "inputs": [
+          {
+            "id": "input-actual",
+            "name": "actual",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "spark-llm::generate",
+                  "name": "answer"
+                }
+              }
+            }
+          },
+          {
+            "id": "input-expected",
+            "name": "expected",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "PASS"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "cases": [
+            {
+              "id": "branch_one_of::pass",
+              "level": 1,
+              "logicalOperator": "and",
+              "conditions": [
+                {
+                  "id": "condition-pass",
+                  "leftVarIndex": "input-actual",
+                  "rightVarIndex": "input-expected",
+                  "compareOperator": "eq"
+                }
+              ]
+            },
+            {
+              "id": "branch_one_of::retry",
+              "level": 999,
+              "logicalOperator": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "spark-llm::generate",
+                  "name": "answer"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "spark-llm::generate",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "spark-llm::generate",
+      "targetNodeId": "if-else::check",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "if-else::check",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": "branch_one_of::pass"
+    },
+    {
+      "sourceNodeId": "if-else::check",
+      "targetNodeId": "spark-llm::generate",
+      "sourceHandle": "branch_one_of::retry"
+    }
+  ]
+}

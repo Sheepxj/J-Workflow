@@ -1,0 +1,113 @@
+{
+  "flowId": "p0-llm-history",
+  "uuid": "p0-chat-llm-history",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "spark-llm::generate",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "spark-llm",
+          "aliasName": "spark-llm::generate"
+        },
+        "inputs": [
+          {
+            "id": "input-text",
+            "name": "text",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "modelId": 1,
+          "domain": "test-model",
+          "template": "Rewrite {{text}}",
+          "systemTemplate": "Review {{text}}",
+          "enableChatHistoryV2": {
+            "isEnabled": true,
+            "rounds": 2
+          }
+        },
+        "outputs": [
+          {
+            "id": "out-answer",
+            "name": "answer",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "id": "out-reason",
+            "name": "reason",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "spark-llm::generate",
+                  "name": "answer"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "spark-llm::generate",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "spark-llm::generate",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    }
+  ]
+}
