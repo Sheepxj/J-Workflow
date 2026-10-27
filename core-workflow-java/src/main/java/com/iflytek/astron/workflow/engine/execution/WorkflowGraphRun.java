@@ -33,8 +33,8 @@ public final class WorkflowGraphRun {
     private final long deadline;
     // 编译后的只读图定义
     private final WorkflowGraph graph;
-    // 待消费的令牌队列（FIFO）
     private final ArrayDeque<Token> pending = new ArrayDeque<>();
+    private final WorkflowTokenScheduler scheduler;
     // 所有发出过的令牌：replay 时据此校验令牌是否存在、内容是否被篡改
     private final Map<String, Token> issued = new HashMap<>();
     // 已消费的令牌 ID，保证一条令牌最多驱动一次执行
@@ -52,6 +52,7 @@ public final class WorkflowGraphRun {
     // 创建即向 START 发放第一条令牌（无来源执行、无来源边）
     WorkflowGraphRun(WorkflowGraph graph, WorkflowRunContext context, WorkflowExecutionLimits limits, long startedAt, long deadline) {
         this.graph = graph;
+        this.scheduler = new WorkflowTokenScheduler(graph);
         this.context = context;
         this.limits = limits;
         this.startedAt = startedAt;
@@ -81,6 +82,10 @@ public final class WorkflowGraphRun {
 
     public synchronized Set<String> consumedTokenIds() {
         return Set.copyOf(consumed);
+    }
+
+    public synchronized List<Token> arrivals(String activationId) {
+        return scheduler.arrivals(activationId);
     }
 
     /**
@@ -114,22 +119,32 @@ public final class WorkflowGraphRun {
         advancing = false;
     }
 
-    // 取下一条未消费的令牌；队列里已消费过的直接跳过
     synchronized Token next() {
-        while (!pending.isEmpty()) {
-            Token next = pending.removeFirst();
-            if (consumed.add(next.id())) {
-                return next;
-            }
+        pending.removeIf(token -> consumed.contains(token.id()));
+        if (pending.isEmpty()) {
+            return null;
         }
-        return null;
+        WorkflowTokenScheduler.Selection selected = scheduler.select(List.copyOf(pending));
+        selected.arrivals().forEach(token -> consumed.add(token.id()));
+        pending.removeIf(token -> consumed.contains(token.id()));
+        return selected.token();
     }
 
     // 发放新令牌：登记到 issued（供 replay 校验），并追加到待办队列尾部
     synchronized void issue(String nodeId, String sourceExecutionId, Integer edgeIndex) {
         Token token = new Token(UUID.randomUUID().toString(), nodeId, sourceExecutionId, edgeIndex);
+        scheduler.register(token);
         issued.put(token.id(), token);
         pending.addLast(token);
+    }
+
+    synchronized void issueSuccessors(Token source, String executionId, List<WorkflowGraph.Transition> edges) {
+        for (WorkflowGraph.Transition edge : edges) {
+            Token token = new Token(UUID.randomUUID().toString(), edge.target(), executionId, edge.edgeIndex());
+            scheduler.registerSuccessor(token, source);
+            issued.put(token.id(), token);
+            pending.addLast(token);
+        }
     }
 
     // 记录 END 的输出快照；此时还不算成功，要等 finishIfIdle 确认确实空闲

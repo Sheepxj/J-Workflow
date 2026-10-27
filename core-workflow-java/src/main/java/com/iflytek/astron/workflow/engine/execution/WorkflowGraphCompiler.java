@@ -85,20 +85,15 @@ public final class WorkflowGraphCompiler {
         // 5. START 不能有入边，END 不能有出边
         require(incoming.get(startId).isEmpty(), "START cannot have incoming edges");
         require(outgoing.get(endId).isEmpty(), "END cannot have outgoing edges");
-        // 6. 逐节点约束：输入绑定、重试配置、分支数量（当前引擎不支持并行 fork）
         for (Node node : nodes.values()) {
             validateBindings(node, nodes);
             List<WorkflowGraph.Transition> edges = outgoing.get(node.getId());
-            requireSupported(edges.stream().filter(WorkflowGraph.Transition::failure).count() <= 1, "Multiple failure successors: " + node.getId());
             if (node.getNodeType() == NodeTypeEnum.IF_ELSE) {
                 List<String> handles = IfElseNodeExecutor.handles(node);
                 for (String handle : handles) {
                     long count = edges.stream().filter(edge -> !edge.failure() && handle.equals(edge.handle())).count();
-                    requireSupported(count <= 1, "IF_ELSE outlet forks to multiple targets: " + handle);
-                    require(count == 1, "IF_ELSE outlet has no edge: " + handle);
+                    require(count >= 1, "IF_ELSE outlet has no edge: " + handle);
                 }
-            } else {
-                requireSupported(edges.stream().filter(edge -> !edge.failure()).count() <= 1, "Parallel success fork is not supported: " + node.getId());
             }
         }
         // 7. 连通性：从 START 出发必须能走到所有节点
@@ -168,13 +163,6 @@ public final class WorkflowGraphCompiler {
     private void require(boolean valid, String message) {
         if (!valid) {
             throw new NodeCustomException(ErrorCode.INVALID_WORKFLOW_GRAPH, message);
-        }
-    }
-
-    // 语法上成立、但当前引擎不支持（如并行 fork、IF_ELSE 出口多条边）
-    private void requireSupported(boolean valid, String message) {
-        if (!valid) {
-            throw new NodeCustomException(ErrorCode.UNSUPPORTED_WORKFLOW_GRAPH, message);
         }
     }
 

@@ -248,12 +248,14 @@ class WorkflowGraphExecutorTest {
     }
 
     @Test
-    void unsupportedForksAreRejectedBeforeWorkflowCallbacksOrBusinessCalls() throws Exception {
+    void invalidPortsAreRejectedBeforeWorkflowCallbacksOrBusinessCalls() throws Exception {
         try (WorkflowGraphTestSupport harness = new WorkflowGraphTestSupport()) {
+            WorkflowDSL definition = harness.fixture("parallel-fork");
+            definition.getEdges().getFirst().setSourceHandle("unknown");
             NodeCustomException error = assertThrows(NodeCustomException.class, () -> harness.executor.execute(
-                    harness.fixture("parallel-fork"), Map.of("text", "seed"), harness.callback, null));
+                    definition, Map.of("text", "seed"), harness.callback, null));
 
-            assertEquals(ErrorCode.UNSUPPORTED_WORKFLOW_GRAPH.getCode(), error.getCode());
+            assertEquals(ErrorCode.INVALID_WORKFLOW_GRAPH.getCode(), error.getCode());
             verify(harness.callback, never()).onWorkflowStart();
             assertEquals(0, harness.modelCalls.get());
         }

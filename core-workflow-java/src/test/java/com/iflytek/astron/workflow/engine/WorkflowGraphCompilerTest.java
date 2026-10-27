@@ -8,7 +8,6 @@ import com.iflytek.astron.workflow.engine.domain.chain.RetryConfig;
 import com.iflytek.astron.workflow.engine.domain.chain.Value;
 import com.iflytek.astron.workflow.engine.node.StreamCallback;
 import com.iflytek.astron.workflow.engine.util.WorkflowStreamVirtualThreadExecutor;
-import com.iflytek.astron.workflow.exception.ErrorCode;
 import com.iflytek.astron.workflow.exception.NodeCustomException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,7 +23,7 @@ import static org.mockito.Mockito.mock;
 class WorkflowGraphCompilerTest {
     @ParameterizedTest
     @ValueSource(strings = {"sequential", "failure-branch", "custom-error-output", "interrupt", "llm-history",
-            "plugin", "knowledge", "branch-cycle", "exclusive-merge"})
+            "plugin", "knowledge", "branch-cycle", "exclusive-merge", "parallel-fork", "multiple-outcomes"})
     void acceptsExistingSinglePathDefinitionsWithoutChangingTheirDsl(String fixture) throws Exception {
         try (WorkflowGraphTestSupport harness = new WorkflowGraphTestSupport()) {
             WorkflowDSL definition = harness.fixture(fixture);
@@ -74,7 +73,7 @@ class WorkflowGraphCompilerTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"normal-fork", "failure-fork", "same-case-fork"})
-    void rejectsConcurrentForksInsteadOfSerializingThem(String mutation) throws Exception {
+    void acceptsMultipleSuccessFailureAndSelectedCaseSuccessors(String mutation) throws Exception {
         try (WorkflowGraphTestSupport harness = new WorkflowGraphTestSupport()) {
             WorkflowDSL definition = harness.fixture("branch-cycle");
             switch (mutation) {
@@ -87,8 +86,7 @@ class WorkflowGraphCompilerTest {
                 default -> throw new IllegalStateException(mutation);
             }
 
-            NodeCustomException failure = assertThrows(NodeCustomException.class, () -> harness.executor.prepare(definition));
-            assertEquals(ErrorCode.UNSUPPORTED_WORKFLOW_GRAPH.getCode(), failure.getCode());
+            assertEquals(definition.getNodes().size(), harness.executor.prepare(definition).nodeIds().size());
         }
     }
 

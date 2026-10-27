@@ -15,7 +15,8 @@
 | [knowledge.json](knowledge.json) | 原知识库执行器使用过滤条件，输出 context、sources、results | 增强完整流程经过原 KnowledgeBaseNodeExecutor，已通过 |
 | [branch-cycle.json](branch-cycle.json) | 两种 JSON 解析器均保留 cases、输入 ID 与 sourceHandle；P0 注册表缺少 IF_ELSE | P2 用原 LLM 的替身返回 RETRY、RETRY、PASS，LLM 激活 3 次，共 8 次激活，最终 `Result: PASS`，已通过 |
 | [exclusive-merge.json](exclusive-merge.json) | 原格式可解析；P0 引擎因缺少 IF_ELSE 拒绝 | P2 输入 `left` 时只走左路，其他输入走默认右路，合并节点只执行一次，已通过 |
-| [parallel-fork.json](parallel-fork.json) | 原 ParallelWorkflowEngine 执行两路并汇聚，merge 只执行一次 | P2 增强路径预检明确拒绝，旧 DAG 并行路径保留，两项均已通过；P6 再扩展 |
+| [parallel-fork.json](parallel-fork.json) | 原 ParallelWorkflowEngine 执行两路并汇聚，merge 只执行一次 | P2.1 增强路径串行执行两路，merge 只执行一次，与原串行引擎对照通过；旧线程并行保留 |
+| [multiple-outcomes.json](multiple-outcomes.json) | P2.1 新增的原 DSL 兼容样例 | work 默认失败，执行两个失败后继并汇聚；测试将其调整为成功和自定义错误输出，验证两个正常后继及对立路径不执行 |
 
 分支回跳样例从结束条件 `answer == PASS` 的分支走 END，默认分支返回原 LLM。第一次与后续调用都使用开始节点 text，开启的原模型历史可携带此前对话，因此这个样例不依赖隐式读取尚未产生的节点输出。
 

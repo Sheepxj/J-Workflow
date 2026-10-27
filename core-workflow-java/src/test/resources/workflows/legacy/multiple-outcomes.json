@@ -1,0 +1,266 @@
+{
+  "flowId": "multiple-outcomes",
+  "uuid": "multiple-outcomes-chat",
+  "nodes": [
+    {
+      "id": "node-start::s",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-start",
+          "aliasName": "node-start::s"
+        },
+        "inputs": [],
+        "nodeParam": {},
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::work",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::work"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "node-start::s",
+                  "name": "text"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0,
+          "failureRate": 1
+        },
+        "outputs": [],
+        "retryConfig": {
+          "shouldRetry": false,
+          "maxRetries": 0,
+          "errorStrategy": 2,
+          "customOutput": {}
+        }
+      }
+    },
+    {
+      "id": "mock::left",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::left"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "left"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::right",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::right"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "right"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::fail-left",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::fail-left"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "fail-left"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::fail-right",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::fail-right"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "fail-right"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "mock::merge",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "mock",
+          "aliasName": "mock::merge"
+        },
+        "inputs": [
+          {
+            "id": "input-input",
+            "name": "input",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "literal",
+                "content": "joined"
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "delayMs": 0
+        },
+        "outputs": []
+      }
+    },
+    {
+      "id": "node-end::e",
+      "data": {
+        "nodeMeta": {
+          "nodeType": "node-end",
+          "aliasName": "node-end::e"
+        },
+        "inputs": [
+          {
+            "id": "input-result",
+            "name": "result",
+            "schema": {
+              "type": "string",
+              "value": {
+                "type": "ref",
+                "content": {
+                  "nodeId": "mock::merge",
+                  "name": "output"
+                }
+              }
+            }
+          }
+        ],
+        "nodeParam": {
+          "outputMode": 1,
+          "template": "Result: {{result}}"
+        },
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "sourceNodeId": "node-start::s",
+      "targetNodeId": "mock::work",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "mock::left",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "mock::right",
+      "sourceHandle": "normal_one_of::right"
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "mock::fail-left",
+      "sourceHandle": "intent_chain|left"
+    },
+    {
+      "sourceNodeId": "mock::work",
+      "targetNodeId": "mock::fail-right",
+      "sourceHandle": "intent_chain|right"
+    },
+    {
+      "sourceNodeId": "mock::left",
+      "targetNodeId": "mock::merge",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::right",
+      "targetNodeId": "mock::merge",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::fail-left",
+      "targetNodeId": "mock::merge",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::fail-right",
+      "targetNodeId": "mock::merge",
+      "sourceHandle": null
+    },
+    {
+      "sourceNodeId": "mock::merge",
+      "targetNodeId": "node-end::e",
+      "sourceHandle": null
+    }
+  ]
+}

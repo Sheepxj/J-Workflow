@@ -176,7 +176,7 @@ public final class WorkflowGraphExecutor implements AutoCloseable {
             NodeActivation completed = future.get(remaining(run), TimeUnit.MILLISECONDS);
             checkDuration(run);
             // 6. 按执行结果路由：正常出边发放新令牌，失败走向失败分支，END 则记录最终输出
-            route(run, node, completed);
+            route(run, token, node, completed);
             // 7. 本步结束后若既无待办令牌、也无在跑节点、也无在途调用，即可收敛 run 的终态
             run.finishIfIdle(context.hasPendingExecutions(), context.physicalAttempts());
             return true;
@@ -216,7 +216,7 @@ public final class WorkflowGraphExecutor implements AutoCloseable {
     }
 
     // 根据节点执行结果决定后继：成功走正常出边，失败走失败分支，END 则记录最终输出
-    private void route(WorkflowGraphRun run, Node node, NodeActivation activation) {
+    private void route(WorkflowGraphRun run, WorkflowGraphRun.Token token, Node node, NodeActivation activation) {
         NodeRunResult result = activation.result();
         if (activation.status() == NodeActivation.Status.CANCELLED || result == null) {
             throw new NodeCustomException(ErrorCode.INTERRUPTED_ERROR, "Node execution did not complete: " + node.getId());
@@ -238,20 +238,17 @@ public final class WorkflowGraphExecutor implements AutoCloseable {
                 .filter(edge -> edge.failure() == failedRoute).toList();
         if (!failedRoute && node.getNodeType() == NodeTypeEnum.IF_ELSE) {
             candidates = candidates.stream().filter(edge -> edge.handle().equals(result.getSelectedHandle())).toList();
-            if (candidates.size() != 1) {
+            if (candidates.isEmpty()) {
                 throw new NodeCustomException(ErrorCode.WORKFLOW_ROUTING_ERROR, "IF_ELSE did not select a declared outlet: " + node.getId());
             }
         }
         if (failedRoute && candidates.isEmpty()) {
             throw result.getError() == null ? new NodeCustomException(ErrorCode.WORKFLOW_EXECUTION_ERROR, "Unhandled node failure") : result.getError();
         }
-        if (candidates.size() > 1) {
-            throw new NodeCustomException(ErrorCode.WORKFLOW_ROUTING_ERROR, "Multiple successors selected at " + node.getId());
+        if (candidates.isEmpty()) {
+            throw new NodeCustomException(ErrorCode.WORKFLOW_CONTROL_FLOW_STALLED, "No successor selected at " + node.getId());
         }
-        if (!candidates.isEmpty()) {
-            WorkflowGraph.Transition selected = candidates.getFirst();
-            run.issue(selected.target(), activation.executionId(), selected.edgeIndex());
-        }
+        run.issueSuccessors(token, activation.executionId(), candidates);
     }
 
     // 取消本次执行：先标记作用域不可再产生副作用，再中断工作线程
